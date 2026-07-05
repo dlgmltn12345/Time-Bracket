@@ -136,6 +136,8 @@ struct ContentView: View {
             stage: .hostAvailability,
             memberInitials: ["나"] + draft.members.map(\.initial),
             focusDate: focusDate,
+            candidateStartDate: draft.startDate,
+            candidateEndDate: draft.endDate,
             confirmedDay: "\(calendar.component(.day, from: focusDate))",
             confirmedWeekday: weekdayText(for: focusDate)
         )
@@ -275,7 +277,7 @@ private enum LayoutMetrics {
     static let panelCornerRadius: CGFloat = 20
     static let calendarBottomPadding: CGFloat = 10
     static let calendarDayCellSize: CGFloat = 42
-    static let timeAxisWidth: CGFloat = 36
+    static let timeAxisWidth: CGFloat = 24
     static let scheduleColumnSpacing: CGFloat = 5
     static let scheduleTrailingPadding: CGFloat = 12
 
@@ -296,6 +298,9 @@ private struct CalendarScreen: View {
     let calendar: Calendar
 
     @State private var availabilityMode: AvailabilityMode = .available
+    @State private var availabilitySlots: [AvailabilitySlot: AvailabilityMode] = [:]
+    @State private var isHostAvailabilityComplete = false
+    @State private var schedulePageIndex = 0
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -330,6 +335,8 @@ private struct CalendarScreen: View {
                             ExpandableCalendarView(
                                 month: displayedMonth,
                                 selectedDate: $selectedDate,
+                                rangeStartDate: meeting.candidateStartDate,
+                                rangeEndDate: meeting.candidateEndDate,
                                 expansionProgress: expansionProgress,
                                 calendar: calendar
                             )
@@ -361,8 +368,16 @@ private struct CalendarScreen: View {
 
                             ScheduleGridView(
                                 selectedDate: selectedDate,
+                                visibleDates: visibleScheduleDates,
+                                pageIndex: schedulePageIndex,
+                                pageCount: scheduleDatePages.count,
                                 events: events,
-                                calendar: calendar
+                                availabilitySlots: availabilitySlots,
+                                selectedAvailabilityMode: availabilityMode,
+                                calendar: calendar,
+                                onTapSlot: updateAvailabilitySlot,
+                                onPaintSlot: paintAvailabilitySlot,
+                                onMovePage: moveSchedulePage
                             )
                             .frame(height: scheduleHeight)
                             .clipShape(
@@ -380,9 +395,28 @@ private struct CalendarScreen: View {
                 }
             }
 
-            AvailabilityModeBar(selection: $availabilityMode)
-                .padding(.horizontal, LayoutMetrics.horizontalPadding)
-                .padding(.bottom, 12)
+            VStack(spacing: 10) {
+                if !availabilitySlots.isEmpty {
+                    Button {
+                        withAnimation(.spring(response: 0.24, dampingFraction: 0.86)) {
+                            isHostAvailabilityComplete = true
+                        }
+                    } label: {
+                        Label(isHostAvailabilityComplete ? "입력 완료됨" : "입력 완료", systemImage: isHostAvailabilityComplete ? "checkmark.circle.fill" : "checkmark")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 18)
+                            .frame(height: 40)
+                            .background(Color(uiColor: .systemBlue), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+
+                AvailabilityModeBar(selection: $availabilityMode)
+            }
+            .padding(.horizontal, LayoutMetrics.horizontalPadding)
+            .padding(.bottom, 12)
         }
         .background(Color(uiColor: .systemBackground))
     }
@@ -409,6 +443,39 @@ private struct CalendarScreen: View {
         }
 
         return calendar.isDate(selectedDate, inSameDayAs: Date())
+    }
+
+    private var candidateDates: [Date] {
+        var dates: [Date] = []
+        let startDate = calendar.startOfDay(for: min(meeting.candidateStartDate, meeting.candidateEndDate))
+        let endDate = calendar.startOfDay(for: max(meeting.candidateStartDate, meeting.candidateEndDate))
+        var offset = 0
+
+        while true {
+            guard let date = calendar.date(byAdding: .day, value: offset, to: startDate), date <= endDate else {
+                break
+            }
+
+            dates.append(date)
+            offset += 1
+        }
+
+        return dates.isEmpty ? [calendar.startOfDay(for: meeting.focusDate)] : dates
+    }
+
+    private var scheduleDatePages: [[Date]] {
+        stride(from: 0, to: candidateDates.count, by: 5).map { startIndex in
+            Array(candidateDates[startIndex..<min(startIndex + 5, candidateDates.count)])
+        }
+    }
+
+    private var visibleScheduleDates: [Date] {
+        let pages = scheduleDatePages
+        guard !pages.isEmpty else {
+            return []
+        }
+
+        return pages[min(schedulePageIndex, pages.count - 1)]
     }
 
     private var calendarMonthSwipeGesture: some Gesture {
@@ -464,6 +531,44 @@ private struct CalendarScreen: View {
         withAnimation(.interactiveSpring(response: 0.36, dampingFraction: 0.88)) {
             displayedMonth = monthStart
             selectedDate = today
+        }
+    }
+
+    private func updateAvailabilitySlot(_ slot: AvailabilitySlot) {
+        withAnimation(.spring(response: 0.18, dampingFraction: 0.86)) {
+            if availabilitySlots[slot] == availabilityMode {
+                availabilitySlots.removeValue(forKey: slot)
+            } else {
+                availabilitySlots[slot] = availabilityMode
+            }
+
+            isHostAvailabilityComplete = false
+        }
+    }
+
+    private func paintAvailabilitySlot(_ slot: AvailabilitySlot) {
+        guard availabilitySlots[slot] != availabilityMode else {
+            return
+        }
+
+        withAnimation(.spring(response: 0.18, dampingFraction: 0.86)) {
+            availabilitySlots[slot] = availabilityMode
+            isHostAvailabilityComplete = false
+        }
+    }
+
+    private func moveSchedulePage(by offset: Int) {
+        let pages = scheduleDatePages
+        let maxIndex = max(pages.count - 1, 0)
+        let nextIndex = min(max(schedulePageIndex + offset, 0), maxIndex)
+
+        guard nextIndex != schedulePageIndex else {
+            return
+        }
+
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+            schedulePageIndex = nextIndex
+            selectedDate = pages[nextIndex].first
         }
     }
 }
@@ -5173,6 +5278,8 @@ private struct HomeMeeting: Identifiable {
     let stage: MeetingStage
     let memberInitials: [String]
     let focusDate: Date
+    let candidateStartDate: Date
+    let candidateEndDate: Date
     let confirmedDay: String
     let confirmedWeekday: String
 
@@ -5202,6 +5309,8 @@ private struct HomeMeeting: Identifiable {
             stage: .hostAvailability,
             memberInitials: ["나", "PM", "FE", "BE"],
             focusDate: Self.makeDate(year: 2026, month: 7, day: 15),
+            candidateStartDate: Self.makeDate(year: 2026, month: 7, day: 15),
+            candidateEndDate: Self.makeDate(year: 2026, month: 7, day: 18),
             confirmedDay: "15",
             confirmedWeekday: "수"
         ),
@@ -5218,6 +5327,8 @@ private struct HomeMeeting: Identifiable {
             stage: .bracketReview,
             memberInitials: ["나", "PO", "UX"],
             focusDate: Self.makeDate(year: 2026, month: 7, day: 16),
+            candidateStartDate: Self.makeDate(year: 2026, month: 7, day: 16),
+            candidateEndDate: Self.makeDate(year: 2026, month: 7, day: 17),
             confirmedDay: "16",
             confirmedWeekday: "목"
         ),
@@ -5234,6 +5345,8 @@ private struct HomeMeeting: Identifiable {
             stage: .collectingResponses,
             memberInitials: ["나", "UR", "DS"],
             focusDate: Self.makeDate(year: 2026, month: 7, day: 21),
+            candidateStartDate: Self.makeDate(year: 2026, month: 7, day: 21),
+            candidateEndDate: Self.makeDate(year: 2026, month: 7, day: 22),
             confirmedDay: "21",
             confirmedWeekday: "화"
         ),
@@ -5250,6 +5363,8 @@ private struct HomeMeeting: Identifiable {
             stage: .confirmed,
             memberInitials: ["나", "BD", "MK"],
             focusDate: Self.makeDate(year: 2026, month: 7, day: 14),
+            candidateStartDate: Self.makeDate(year: 2026, month: 7, day: 14),
+            candidateEndDate: Self.makeDate(year: 2026, month: 7, day: 14),
             confirmedDay: "14",
             confirmedWeekday: "화"
         )
@@ -5311,6 +5426,8 @@ private enum MeetingStatus: Equatable {
 private struct ExpandableCalendarView: View {
     let month: Date
     @Binding var selectedDate: Date?
+    let rangeStartDate: Date
+    let rangeEndDate: Date
     let expansionProgress: CGFloat
     let calendar: Calendar
 
@@ -5319,6 +5436,8 @@ private struct ExpandableCalendarView: View {
             MonthCalendarView(
                 month: month,
                 selectedDate: $selectedDate,
+                rangeStartDate: rangeStartDate,
+                rangeEndDate: rangeEndDate,
                 calendar: calendar
             )
             .opacity(expansionProgress)
@@ -5328,6 +5447,8 @@ private struct ExpandableCalendarView: View {
             WeekStripView(
                 month: month,
                 selectedDate: $selectedDate,
+                rangeStartDate: rangeStartDate,
+                rangeEndDate: rangeEndDate,
                 calendar: calendar
             )
             .opacity(1 - expansionProgress)
@@ -5343,6 +5464,8 @@ private struct ExpandableCalendarView: View {
 private struct MonthCalendarView: View {
     let month: Date
     @Binding var selectedDate: Date?
+    let rangeStartDate: Date
+    let rangeEndDate: Date
     let calendar: Calendar
 
     var body: some View {
@@ -5358,8 +5481,16 @@ private struct MonthCalendarView: View {
                     } label: {
                         CalendarDayCell(
                             date: day.date,
-                            isSelected: selectedDate.map { calendar.isDate(day.date, inSameDayAs: $0) } ?? false,
+                            isSelected: isSelected(day.date),
                             isCurrentMonth: day.isCurrentMonth,
+                            isRangeStart: isRangeStart(day.date),
+                            isRangeEnd: isRangeEnd(day.date),
+                            isInRange: isInRange(day.date),
+                            isSingleDayRange: isSingleDayRange,
+                            isWeekStart: isWeekStart(day.date),
+                            isWeekEnd: isWeekEnd(day.date),
+                            continuesFromPreviousWeek: continuesFromPreviousWeek(day.date),
+                            continuesToNextWeek: continuesToNextWeek(day.date),
                             calendar: calendar
                         )
                     }
@@ -5409,12 +5540,72 @@ private struct MonthCalendarView: View {
         }
     }
 
+    private var normalizedRangeStartDate: Date {
+        calendar.startOfDay(for: min(rangeStartDate, rangeEndDate))
+    }
+
+    private var normalizedRangeEndDate: Date {
+        calendar.startOfDay(for: max(rangeStartDate, rangeEndDate))
+    }
+
+    private var isSingleDayRange: Bool {
+        calendar.isDate(normalizedRangeStartDate, inSameDayAs: normalizedRangeEndDate)
+    }
+
+    private func isSelected(_ date: Date) -> Bool {
+        guard let selectedDate, !isInRange(date) else {
+            return false
+        }
+
+        return calendar.isDate(date, inSameDayAs: selectedDate)
+    }
+
+    private func isRangeStart(_ date: Date) -> Bool {
+        calendar.isDate(date, inSameDayAs: normalizedRangeStartDate)
+    }
+
+    private func isRangeEnd(_ date: Date) -> Bool {
+        calendar.isDate(date, inSameDayAs: normalizedRangeEndDate)
+    }
+
+    private func isInRange(_ date: Date) -> Bool {
+        let normalizedDate = calendar.startOfDay(for: date)
+        return normalizedDate >= normalizedRangeStartDate && normalizedDate <= normalizedRangeEndDate
+    }
+
+    private func isWeekStart(_ date: Date) -> Bool {
+        calendar.component(.weekday, from: date) == calendar.firstWeekday
+    }
+
+    private func isWeekEnd(_ date: Date) -> Bool {
+        let weekday = calendar.component(.weekday, from: date)
+        return weekday == ((calendar.firstWeekday + 5) % 7) + 1
+    }
+
+    private func continuesFromPreviousWeek(_ date: Date) -> Bool {
+        guard isWeekStart(date), let previousDate = calendar.date(byAdding: .day, value: -1, to: date) else {
+            return false
+        }
+
+        return isInRange(previousDate)
+    }
+
+    private func continuesToNextWeek(_ date: Date) -> Bool {
+        guard isWeekEnd(date), let nextDate = calendar.date(byAdding: .day, value: 1, to: date) else {
+            return false
+        }
+
+        return isInRange(nextDate)
+    }
+
     private static let weekdaySymbols = ["일", "월", "화", "수", "목", "금", "토"]
 }
 
 private struct WeekStripView: View {
     let month: Date
     @Binding var selectedDate: Date?
+    let rangeStartDate: Date
+    let rangeEndDate: Date
     let calendar: Calendar
 
     var body: some View {
@@ -5430,8 +5621,16 @@ private struct WeekStripView: View {
                     } label: {
                         CalendarDayCell(
                             date: date,
-                            isSelected: selectedDate.map { calendar.isDate(date, inSameDayAs: $0) } ?? false,
+                            isSelected: isSelected(date),
                             isCurrentMonth: true,
+                            isRangeStart: isRangeStart(date),
+                            isRangeEnd: isRangeEnd(date),
+                            isInRange: isInRange(date),
+                            isSingleDayRange: isSingleDayRange,
+                            isWeekStart: isWeekStart(date),
+                            isWeekEnd: isWeekEnd(date),
+                            continuesFromPreviousWeek: continuesFromPreviousWeek(date),
+                            continuesToNextWeek: continuesToNextWeek(date),
                             calendar: calendar
                         )
                     }
@@ -5466,6 +5665,64 @@ private struct WeekStripView: View {
         }
     }
 
+    private var normalizedRangeStartDate: Date {
+        calendar.startOfDay(for: min(rangeStartDate, rangeEndDate))
+    }
+
+    private var normalizedRangeEndDate: Date {
+        calendar.startOfDay(for: max(rangeStartDate, rangeEndDate))
+    }
+
+    private var isSingleDayRange: Bool {
+        calendar.isDate(normalizedRangeStartDate, inSameDayAs: normalizedRangeEndDate)
+    }
+
+    private func isSelected(_ date: Date) -> Bool {
+        guard let selectedDate, !isInRange(date) else {
+            return false
+        }
+
+        return calendar.isDate(date, inSameDayAs: selectedDate)
+    }
+
+    private func isRangeStart(_ date: Date) -> Bool {
+        calendar.isDate(date, inSameDayAs: normalizedRangeStartDate)
+    }
+
+    private func isRangeEnd(_ date: Date) -> Bool {
+        calendar.isDate(date, inSameDayAs: normalizedRangeEndDate)
+    }
+
+    private func isInRange(_ date: Date) -> Bool {
+        let normalizedDate = calendar.startOfDay(for: date)
+        return normalizedDate >= normalizedRangeStartDate && normalizedDate <= normalizedRangeEndDate
+    }
+
+    private func isWeekStart(_ date: Date) -> Bool {
+        calendar.component(.weekday, from: date) == calendar.firstWeekday
+    }
+
+    private func isWeekEnd(_ date: Date) -> Bool {
+        let weekday = calendar.component(.weekday, from: date)
+        return weekday == ((calendar.firstWeekday + 5) % 7) + 1
+    }
+
+    private func continuesFromPreviousWeek(_ date: Date) -> Bool {
+        guard isWeekStart(date), let previousDate = calendar.date(byAdding: .day, value: -1, to: date) else {
+            return false
+        }
+
+        return isInRange(previousDate)
+    }
+
+    private func continuesToNextWeek(_ date: Date) -> Bool {
+        guard isWeekEnd(date), let nextDate = calendar.date(byAdding: .day, value: 1, to: date) else {
+            return false
+        }
+
+        return isInRange(nextDate)
+    }
+
     private static let weekdaySymbols = ["일", "월", "화", "수", "목", "금", "토"]
 }
 
@@ -5473,21 +5730,116 @@ private struct CalendarDayCell: View {
     let date: Date
     let isSelected: Bool
     let isCurrentMonth: Bool
+    let isRangeStart: Bool
+    let isRangeEnd: Bool
+    let isInRange: Bool
+    let isSingleDayRange: Bool
+    let isWeekStart: Bool
+    let isWeekEnd: Bool
+    let continuesFromPreviousWeek: Bool
+    let continuesToNextWeek: Bool
     let calendar: Calendar
 
     var body: some View {
-        Text("\(calendar.component(.day, from: date))")
-            .font(.system(size: 17, weight: isSelected ? .semibold : .regular))
-            .frame(width: LayoutMetrics.calendarDayCellSize, height: LayoutMetrics.calendarDayCellSize)
-            .foregroundStyle(foregroundStyle)
-            .background(isSelected ? Color.primary : Color.clear, in: Circle())
+        ZStack {
+            rangeConnector
+
+            Text("\(calendar.component(.day, from: date))")
+                .font(.system(size: 17, weight: isEmphasized ? .semibold : .regular))
+                .frame(width: LayoutMetrics.calendarDayCellSize, height: LayoutMetrics.calendarDayCellSize)
+                .foregroundStyle(foregroundStyle)
+                .background(endpointBackground, in: Circle())
+        }
             .frame(maxWidth: .infinity)
+            .frame(height: LayoutMetrics.calendarDayCellSize)
             .accessibilityLabel(date.formatted(date: .complete, time: .omitted))
-            .accessibilityAddTraits(isSelected ? .isSelected : [])
+            .accessibilityAddTraits(isEmphasized ? .isSelected : [])
+    }
+
+    @ViewBuilder
+    private var rangeConnector: some View {
+        GeometryReader { proxy in
+            let width = proxy.size.width
+
+            ZStack {
+                if isInRange && !isSingleDayRange {
+                    if isRangeStart {
+                        HStack(spacing: 0) {
+                            Spacer(minLength: 0)
+                            Rectangle()
+                                .fill(rangeColor)
+                                .frame(width: (width / 2) + 1, height: LayoutMetrics.calendarDayCellSize)
+                        }
+                    } else if isRangeEnd {
+                        HStack(spacing: 0) {
+                            Rectangle()
+                                .fill(rangeColor)
+                                .frame(width: (width / 2) + 1, height: LayoutMetrics.calendarDayCellSize)
+                            Spacer(minLength: 0)
+                        }
+                    } else {
+                        rangeSurface
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .opacity(isInRange && !isSingleDayRange ? 1 : 0)
+            .animation(.easeInOut(duration: 0.18), value: isInRange)
+        }
+    }
+
+    @ViewBuilder
+    private var rangeSurface: some View {
+        if isWeekStart || isWeekEnd {
+            UnevenRoundedRectangle(cornerRadii: rangeCornerRadii, style: .continuous)
+                .fill(rangeColor)
+                .frame(height: LayoutMetrics.calendarDayCellSize)
+        } else {
+            Rectangle()
+                .fill(rangeColor)
+                .frame(height: LayoutMetrics.calendarDayCellSize)
+        }
+    }
+
+    private var rangeCornerRadii: RectangleCornerRadii {
+        RectangleCornerRadii(
+            topLeading: shouldRoundLeading ? LayoutMetrics.calendarDayCellSize / 2 : 0,
+            bottomLeading: shouldRoundLeading ? LayoutMetrics.calendarDayCellSize / 2 : 0,
+            bottomTrailing: shouldRoundTrailing ? LayoutMetrics.calendarDayCellSize / 2 : 0,
+            topTrailing: shouldRoundTrailing ? LayoutMetrics.calendarDayCellSize / 2 : 0
+        )
+    }
+
+    private var shouldRoundLeading: Bool {
+        isWeekStart && !continuesFromPreviousWeek
+    }
+
+    private var shouldRoundTrailing: Bool {
+        isWeekEnd && !continuesToNextWeek
+    }
+
+    private var rangeColor: Color {
+        Color(uiColor: .systemBlue).opacity(0.14)
+    }
+
+    private var endpointBackground: Color {
+        if isRangeEndpoint {
+            return Color(uiColor: .systemBlue)
+        }
+
+        return isSelected ? Color.primary : Color.clear
+    }
+
+    private var isRangeEndpoint: Bool {
+        isRangeStart || isRangeEnd
+    }
+
+    private var isEmphasized: Bool {
+        isSelected || isRangeEndpoint
     }
 
     private var foregroundStyle: Color {
-        if isSelected {
+        if isEmphasized {
             return .white
         }
 
@@ -5561,16 +5913,25 @@ private struct CalendarDragHandle: View {
 
 private struct ScheduleGridView: View {
     let selectedDate: Date?
+    let visibleDates: [Date]
+    let pageIndex: Int
+    let pageCount: Int
     let events: [ScheduleEvent]
+    let availabilitySlots: [AvailabilitySlot: AvailabilityMode]
+    let selectedAvailabilityMode: AvailabilityMode
     let calendar: Calendar
+    let onTapSlot: (AvailabilitySlot) -> Void
+    let onPaintSlot: (AvailabilitySlot) -> Void
+    let onMovePage: (Int) -> Void
 
     @State private var currentTime = Date()
+    @State private var lastPaintedSlot: AvailabilitySlot?
 
-    private let hours = Array(9...18)
+    private let hours = Array(9..<18)
     private let workStartHour = 9
     private let workEndHour = 18
     private let rowHeight: CGFloat = 42
-    private let headerHeight: CGFloat = 26
+    private let headerHeight: CGFloat = 42
     private let clock = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -5587,15 +5948,18 @@ private struct ScheduleGridView: View {
                         .frame(width: LayoutMetrics.timeAxisWidth)
 
                     VStack(spacing: 0) {
-                        selectedDateHeader
+                        scheduleHeader(width: timelineWidth)
                             .frame(width: timelineWidth, height: headerHeight, alignment: .leading)
 
                         ZStack(alignment: .topLeading) {
                             gridBackground(width: timelineWidth)
+                            availabilityLayer(width: timelineWidth)
                             eventLayer(width: timelineWidth)
                             currentTimeIndicator(width: timelineWidth)
                         }
                         .frame(width: timelineWidth, height: gridHeight)
+                        .contentShape(Rectangle())
+                        .simultaneousGesture(slotDragGesture(width: timelineWidth))
                     }
                 }
                 .frame(width: contentWidth, alignment: .leading)
@@ -5615,47 +5979,129 @@ private struct ScheduleGridView: View {
             Color.clear
                 .frame(height: headerHeight)
 
-            ZStack(alignment: .topTrailing) {
+            VStack(spacing: 3) {
                 ForEach(hours, id: \.self) { hour in
                     Text(timeLabel(hour))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
-                        .frame(width: LayoutMetrics.timeAxisWidth, alignment: .trailing)
+                        .frame(width: LayoutMetrics.timeAxisWidth, height: rowHeight - 3, alignment: .trailing)
                         .lineLimit(1)
                         .minimumScaleFactor(0.82)
-                        .offset(y: CGFloat(hour - workStartHour) * rowHeight - 5)
                 }
             }
             .frame(width: LayoutMetrics.timeAxisWidth, height: gridHeight, alignment: .topTrailing)
         }
     }
 
-    private var selectedDateHeader: some View {
-        Text(selectedDateHeaderText)
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(.secondary)
+    private func scheduleHeader(width: CGFloat) -> some View {
+        VStack(spacing: 5) {
+            if pageCount > 1 {
+                HStack(spacing: 8) {
+                    Spacer()
+
+                    Text("\(pageIndex + 1)/\(pageCount)")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color(uiColor: .tertiaryLabel))
+
+                    Button {
+                        onMovePage(-1)
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 11, weight: .bold))
+                            .frame(width: 24, height: 22)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(pageIndex == 0)
+                    .opacity(pageIndex == 0 ? 0.28 : 1)
+
+                    Button {
+                        onMovePage(1)
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .bold))
+                            .frame(width: 24, height: 22)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(pageIndex >= pageCount - 1)
+                    .opacity(pageIndex >= pageCount - 1 ? 0.28 : 1)
+                }
+            }
+
+            HStack(spacing: LayoutMetrics.scheduleColumnSpacing) {
+                ForEach(visibleDates, id: \.timeIntervalSinceReferenceDate) { date in
+                    VStack(spacing: 1) {
+                        Text(shortWeekdayText(for: date))
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(isWeekend(date) ? Color(uiColor: .tertiaryLabel) : .secondary)
+
+                        Text("\(calendar.component(.day, from: date))")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(isWeekend(date) ? Color(uiColor: .tertiaryLabel) : .primary)
+                    }
+                    .frame(width: columnWidth(for: width), height: 24)
+                }
+            }
+        }
     }
 
     private func gridBackground(width: CGFloat) -> some View {
         VStack(spacing: 3) {
-            ForEach(0..<hourIntervalCount, id: \.self) { _ in
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(Color(uiColor: .systemGray6).opacity(0.72))
-                    .frame(width: width, height: rowHeight - 3)
+            ForEach(workStartHour..<workEndHour, id: \.self) { _ in
+                HStack(spacing: LayoutMetrics.scheduleColumnSpacing) {
+                    ForEach(visibleDates, id: \.timeIntervalSinceReferenceDate) { date in
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(isWeekend(date) ? Color(uiColor: .systemGray6).opacity(0.54) : Color(uiColor: .systemGray6).opacity(0.72))
+                            .frame(width: columnWidth(for: width), height: rowHeight - 3)
+                        }
+                }
+            }
+        }
+    }
+
+    private func availabilityLayer(width: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(Array(visibleDates.enumerated()), id: \.element.timeIntervalSinceReferenceDate) { dayIndex, date in
+                ForEach(workStartHour..<workEndHour, id: \.self) { hour in
+                    let slot = AvailabilitySlot(date: calendar.startOfDay(for: date), hour: hour)
+
+                    if let mode = availabilitySlots[slot] {
+                        ZStack(alignment: .topLeading) {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(mode.tint.opacity(0.22))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .stroke(mode.tint.opacity(0.45), lineWidth: 1)
+                                }
+
+                            Text(mode.title)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(mode.tint)
+                                .padding(.leading, 6)
+                                .padding(.top, 6)
+                        }
+                        .frame(width: max(columnWidth(for: width) - 6, 0), height: rowHeight - 8)
+                        .offset(
+                            x: xOffset(for: dayIndex, width: width) + 3,
+                            y: CGFloat(hour - workStartHour) * rowHeight + 4
+                        )
+                    }
+                }
             }
         }
     }
 
     @ViewBuilder
     private func eventLayer(width: CGFloat) -> some View {
-        ForEach(eventsInSelectedDay) { event in
+        ForEach(eventsInVisibleDates) { event in
+            let dayIndex = visibleDates.firstIndex { calendar.isDate($0, inSameDayAs: event.date) } ?? 0
+
             ScheduleEventView(event: event)
                 .frame(
-                    width: max(width - 8, 0),
+                    width: max(columnWidth(for: width) - 6, 0),
                     height: max(CGFloat(event.endHour - event.startHour) * rowHeight - 8, 32)
                 )
                 .offset(
-                    x: 4,
+                    x: xOffset(for: dayIndex, width: width) + 3,
                     y: CGFloat(event.startHour - workStartHour) * rowHeight + 4
                 )
         }
@@ -5663,7 +6109,10 @@ private struct ScheduleGridView: View {
 
     @ViewBuilder
     private func currentTimeIndicator(width: CGFloat) -> some View {
-        if let yOffset = currentTimeOffset {
+        if let yOffset = currentTimeOffset,
+           let dayIndex = currentTimeDayIndex {
+            let columnWidth = columnWidth(for: width)
+
             HStack(spacing: 0) {
                 Circle()
                     .fill(Color(uiColor: .systemRed))
@@ -5672,30 +6121,20 @@ private struct ScheduleGridView: View {
 
                 Rectangle()
                     .fill(Color(uiColor: .systemRed))
-                    .frame(width: width, height: 1)
+                    .frame(width: columnWidth, height: 1)
             }
-            .frame(width: width, height: 6, alignment: .leading)
-            .offset(y: yOffset - 3)
+            .frame(width: columnWidth, height: 6, alignment: .leading)
+            .offset(x: xOffset(for: dayIndex, width: width), y: yOffset - 3)
             .accessibilityLabel("Current time \(currentTimeLabel)")
         }
     }
 
-    private var eventsInSelectedDay: [ScheduleEvent] {
-        guard let selectedDate else {
-            return []
-        }
-
+    private var eventsInVisibleDates: [ScheduleEvent] {
         return events.filter { event in
-            calendar.isDate(event.date, inSameDayAs: selectedDate)
+            visibleDates.contains { date in
+                calendar.isDate(event.date, inSameDayAs: date)
+            }
         }
-    }
-
-    private var selectedDateHeaderText: String {
-        guard let selectedDate else {
-            return ""
-        }
-
-        return "\(selectedDate.formatted(.dateTime.weekday(.abbreviated))) \(calendar.component(.day, from: selectedDate))"
     }
 
     private var hourIntervalCount: Int {
@@ -5723,13 +6162,80 @@ private struct ScheduleGridView: View {
         return (decimalHour - CGFloat(workStartHour)) * rowHeight
     }
 
+    private var currentTimeDayIndex: Int? {
+        visibleDates.firstIndex { date in
+            calendar.isDate(currentTime, inSameDayAs: date)
+        }
+    }
+
     private var currentTimeLabel: String {
         let components = calendar.dateComponents([.hour, .minute], from: currentTime)
         return String(format: "%02d:%02d", components.hour ?? 0, components.minute ?? 0)
     }
 
     private func timeLabel(_ hour: Int) -> String {
-        String(format: "%02d:00", hour)
+        "\(hour)시"
+    }
+
+    private func slotDragGesture(width: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .local)
+            .onChanged { value in
+                guard isDragging(value), let slot = slot(at: value.location, width: width), slot != lastPaintedSlot else {
+                    return
+                }
+
+                lastPaintedSlot = slot
+                onPaintSlot(slot)
+            }
+            .onEnded { value in
+                if !isDragging(value), let slot = slot(at: value.location, width: width) {
+                    onTapSlot(slot)
+                }
+
+                lastPaintedSlot = nil
+            }
+    }
+
+    private func isDragging(_ value: DragGesture.Value) -> Bool {
+        abs(value.translation.width) > 4 || abs(value.translation.height) > 4
+    }
+
+    private func slot(at location: CGPoint, width: CGFloat) -> AvailabilitySlot? {
+        guard !visibleDates.isEmpty else {
+            return nil
+        }
+
+        let columnStep = columnWidth(for: width) + LayoutMetrics.scheduleColumnSpacing
+        let dayIndex = Int(location.x / columnStep)
+        let hourOffset = Int(location.y / rowHeight)
+        let hour = workStartHour + hourOffset
+
+        guard dayIndex >= 0, dayIndex < visibleDates.count, hour >= workStartHour, hour < workEndHour else {
+            return nil
+        }
+
+        return AvailabilitySlot(date: calendar.startOfDay(for: visibleDates[dayIndex]), hour: hour)
+    }
+
+    private func columnWidth(for width: CGFloat) -> CGFloat {
+        let columnCount = max(CGFloat(visibleDates.count), 1)
+        let spacing = LayoutMetrics.scheduleColumnSpacing * max(columnCount - 1, 0)
+        return max((width - spacing) / columnCount, 0)
+    }
+
+    private func xOffset(for dayIndex: Int, width: CGFloat) -> CGFloat {
+        CGFloat(dayIndex) * (columnWidth(for: width) + LayoutMetrics.scheduleColumnSpacing)
+    }
+
+    private func shortWeekdayText(for date: Date) -> String {
+        let symbols = ["일", "월", "화", "수", "목", "금", "토"]
+        let index = max(calendar.component(.weekday, from: date) - 1, 0)
+        return symbols[min(index, symbols.count - 1)]
+    }
+
+    private func isWeekend(_ date: Date) -> Bool {
+        let weekday = calendar.component(.weekday, from: date)
+        return weekday == 1 || weekday == 7
     }
 }
 
@@ -5759,6 +6265,11 @@ private struct ScheduleEventView: View {
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
     }
+}
+
+private struct AvailabilitySlot: Hashable {
+    let date: Date
+    let hour: Int
 }
 
 private struct CalendarDisplayDay: Identifiable {
