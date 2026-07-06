@@ -1065,7 +1065,7 @@ private struct ShareCalendarSheet: View {
         case .copyLink:
             UIPasteboard.general.string = shareURL.absoluteString
             onShare()
-        case .messages, .kakaoTalk, .slack, .teams:
+        case .slack, .teams, .discord, .gmail, .notion, .messages:
             UIPasteboard.general.string = shareMessage
             onShare()
         }
@@ -1090,10 +1090,12 @@ private enum ShareAction: String, Identifiable {
     case copyLink
     case slack
     case teams
-    case kakaoTalk
+    case discord
+    case gmail
+    case notion
     case messages
 
-    static let allCases: [ShareAction] = [.copyLink, .slack, .teams, .kakaoTalk, .messages]
+    static let allCases: [ShareAction] = [.copyLink, .messages, .slack, .gmail, .teams, .discord, .notion]
 
     var id: String {
         rawValue
@@ -1107,61 +1109,54 @@ private enum ShareAction: String, Identifiable {
             return "Slack"
         case .teams:
             return "Teams"
-        case .kakaoTalk:
-            return "카카오톡"
+        case .discord:
+            return "Discord"
+        case .gmail:
+            return "Gmail"
+        case .notion:
+            return "Notion"
         case .messages:
             return "메시지"
         }
     }
 
-    var systemImage: String {
+    var assetName: String? {
         switch self {
         case .copyLink:
-            return "link"
+            return nil
         case .slack:
-            return "number"
+            return "ShareSlack"
         case .teams:
-            return "person.3.fill"
-        case .kakaoTalk:
-            return "bubble.left.and.bubble.right.fill"
+            return "ShareTeams"
+        case .discord:
+            return "ShareDiscord"
+        case .gmail:
+            return "ShareGmail"
+        case .notion:
+            return "ShareNotion"
         case .messages:
-            return "message.fill"
-        }
-    }
-
-    var tint: Color {
-        switch self {
-        case .copyLink:
-            return Color(uiColor: .label)
-        case .slack:
-            return Color(red: 0.30, green: 0.13, blue: 0.44)
-        case .teams:
-            return Color(red: 0.39, green: 0.36, blue: 0.84)
-        case .kakaoTalk:
-            return Color(red: 0.98, green: 0.82, blue: 0.03)
-        case .messages:
-            return Color(red: 0.10, green: 0.82, blue: 0.34)
+            return "ShareMessages"
         }
     }
 
     var background: Color {
         switch self {
-        case .copyLink:
-            return Color(uiColor: .secondarySystemBackground)
-        default:
-            return tint
+        case .copyLink, .slack, .gmail, .teams, .discord, .notion, .messages:
+            return Color(uiColor: .tertiarySystemFill)
         }
     }
 
-    var foreground: Color {
+    var iconSize: CGFloat {
         switch self {
         case .copyLink:
-            return Color(uiColor: .label)
-        case .kakaoTalk:
-            return Color.black.opacity(0.84)
-        default:
-            return .white
+            return 30
+        case .slack, .teams, .discord, .gmail, .notion, .messages:
+            return 42
         }
+    }
+
+    var hasBorder: Bool {
+        false
     }
 }
 
@@ -1172,23 +1167,54 @@ private struct ShareActionButton: View {
     var body: some View {
         Button(action: perform) {
             VStack(spacing: 9) {
-                Image(systemName: item.systemImage)
-                    .font(.system(size: 27, weight: .medium))
-                    .foregroundStyle(item.foreground)
+                ShareActionIcon(item: item)
                     .frame(width: 74, height: 74)
-                    .background(item.background, in: Circle())
 
                 Text(item.title)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.primary)
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
-                    .minimumScaleFactor(0.82)
+                    .frame(width: 82, height: 34, alignment: .top)
             }
-            .frame(width: 78)
+            .frame(width: 82, height: 117, alignment: .top)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .transaction { transaction in
+            transaction.animation = nil
+        }
+    }
+}
+
+private struct ShareActionIcon: View {
+    let item: ShareAction
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(item.background)
+
+            switch item {
+            case .copyLink:
+                Image(systemName: "link")
+                    .font(.system(size: 29, weight: .medium))
+                    .foregroundStyle(Color(uiColor: .label))
+            case .slack, .teams, .discord, .gmail, .notion, .messages:
+                if let assetName = item.assetName {
+                    Image(assetName)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: item.iconSize, height: item.iconSize)
+                }
+            }
+        }
+        .overlay {
+            if item.hasBorder {
+                Circle()
+                    .stroke(Color(uiColor: .separator).opacity(0.18), lineWidth: 0.8)
+            }
+        }
     }
 }
 
@@ -1337,18 +1363,24 @@ private struct AvailabilityReasonSheet: View {
                             .frame(maxWidth: .infinity)
                     }
                 }
+                .frame(height: 36)
             }
         }
+        .frame(height: 80, alignment: .top)
         .transaction { transaction in
             transaction.animation = nil
         }
+        .animation(nil, value: reason)
     }
 
     private func reasonChip(_ suggestion: String) -> some View {
         let isSelected = reason == suggestion
 
         return Button {
-            withAnimation(.spring(response: 0.22, dampingFraction: 0.9)) {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+
+            withTransaction(transaction) {
                 reason = suggestion
             }
         } label: {
@@ -1371,6 +1403,9 @@ private struct AvailabilityReasonSheet: View {
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .transaction { transaction in
+            transaction.animation = nil
+        }
     }
 
     private var suggestionRows: [[String]] {
