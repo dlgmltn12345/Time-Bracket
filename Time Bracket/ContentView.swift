@@ -146,7 +146,7 @@ struct ContentView: View {
             respondedCount: 0,
             status: .waiting,
             stage: .hostAvailability,
-            memberInitials: ["나"] + draft.members.map(\.initial),
+            memberInitials: ["나"] + draft.members.map(\.name),
             focusDate: focusDate,
             candidateStartDate: draft.startDate,
             candidateEndDate: draft.endDate,
@@ -401,6 +401,7 @@ private struct CalendarScreen: View {
                                 calendar: calendar,
                                 onTapSlot: updateAvailabilitySlot,
                                 onCommitSlots: commitAvailabilitySlots,
+                                onEditAvailabilityBlock: editAvailabilityBlock,
                                 onMovePage: moveSchedulePage
                             )
                             .frame(height: scheduleHeight)
@@ -573,7 +574,7 @@ private struct CalendarScreen: View {
     }
 
     private var teamResponseSummaries: [AvailabilitySlot: TeamResponseSummary] {
-        let fallbackNames = ["나", "지민", "현우", "수아", "민재", "서연"]
+        let fallbackNames = ["나", "김민준", "이서연", "오유진", "송승아", "박도윤"]
         let memberNames = (meeting.memberInitials.isEmpty ? fallbackNames : meeting.memberInitials)
         let normalizedNames = (0..<max(meeting.memberCount, memberNames.count)).map { index in
             index < memberNames.count ? memberNames[index] : "팀원 \(index)"
@@ -794,6 +795,18 @@ private struct CalendarScreen: View {
 
             isHostAvailabilityComplete = false
         }
+    }
+
+    private func editAvailabilityBlock(_ detail: AvailabilityBlockDetail) {
+        guard detail.mode.requiresReason else {
+            return
+        }
+
+        let slots = Set((detail.startHour..<detail.endHour).map {
+            AvailabilitySlot(date: detail.date, hour: $0)
+        })
+
+        presentReasonSheet(for: slots, mode: detail.mode)
     }
 
     private func moveSchedulePage(by offset: Int) {
@@ -1181,9 +1194,6 @@ private struct ShareActionButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .transaction { transaction in
-            transaction.animation = nil
-        }
     }
 }
 
@@ -1283,55 +1293,55 @@ private struct AvailabilityReasonSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 20) {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text(draft.mode.reasonTitle)
-                        .font(.system(size: 28, weight: .semibold))
-                        .foregroundStyle(.primary)
-
-                    Text(selectionSummary)
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-
-                suggestionChips
-
-                VStack(alignment: .leading, spacing: 9) {
-                    Text("사유")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.primary)
-
-                    ZStack(alignment: .topLeading) {
-                        if reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            Text(draft.mode.reasonPlaceholder)
-                                .font(.system(size: 16, weight: .regular))
-                                .foregroundStyle(Color(uiColor: .tertiaryLabel))
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 12)
-                        }
-
-                        TextEditor(text: $reason)
-                            .font(.system(size: 16, weight: .regular))
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(draft.mode.reasonTitle)
+                            .font(.system(size: 28, weight: .semibold))
                             .foregroundStyle(.primary)
-                            .focused($isReasonFocused)
-                            .scrollContentBackground(.hidden)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
+
+                        Text(selectionSummary)
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
                     }
-                    .frame(minHeight: 108, maxHeight: 132)
-                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(Color(uiColor: .separator).opacity(0.22), lineWidth: 0.8)
+
+                    suggestionChips
+
+                    VStack(alignment: .leading, spacing: 9) {
+                        Text("사유")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.primary)
+
+                        ZStack(alignment: .topLeading) {
+                            if reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                Text(draft.mode.reasonPlaceholder)
+                                    .font(.system(size: 16, weight: .regular))
+                                    .foregroundStyle(Color(uiColor: .tertiaryLabel))
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 12)
+                            }
+
+                            TextEditor(text: $reason)
+                                .font(.system(size: 16, weight: .regular))
+                                .foregroundStyle(.primary)
+                                .focused($isReasonFocused)
+                                .scrollContentBackground(.hidden)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 8)
+                        }
+                        .frame(minHeight: 108, maxHeight: 132)
+                        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(Color(uiColor: .separator).opacity(0.22), lineWidth: 0.8)
+                        }
                     }
                 }
-
-                Spacer(minLength: 0)
+                .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                .padding(.top, 18)
+                .padding(.bottom, 12)
             }
-            .padding(.horizontal, LayoutMetrics.horizontalPadding)
-            .padding(.top, 18)
-            .padding(.bottom, 12)
             .background(Color(uiColor: .systemBackground))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1857,11 +1867,12 @@ private struct ParticipantStatusBlock: View {
 
             ForEach(Array(meeting.memberInitials.enumerated()), id: \.offset) { index, name in
                 HStack(spacing: 12) {
-                    Text(name)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 32, height: 32)
-                        .background(AvatarStack.colors[index % AvatarStack.colors.count], in: Circle())
+                    ProfileAvatar(
+                        name: name,
+                        fallback: ProfileAsset.fallbackText(for: name),
+                        size: 32,
+                        tint: AvatarStack.colors[index % AvatarStack.colors.count]
+                    )
 
                     Text(index < meeting.respondedCount ? "입력 완료" : "응답 대기")
                         .font(.system(size: 15, weight: .semibold))
@@ -3925,7 +3936,7 @@ private struct ReviewInviteeListCard: View {
 
                 Spacer()
 
-                AvatarStack(names: members.prefix(5).map(\.initial))
+                AvatarStack(names: members.prefix(5).map(\.name))
             }
 
             HStack(spacing: 8) {
@@ -4038,11 +4049,7 @@ private struct ReviewInviteeDetailRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Text(initial)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 34, height: 34)
-                .background(tint, in: Circle())
+            ProfileAvatar(name: name, fallback: initial, size: 34, tint: tint)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(name)
@@ -4475,11 +4482,12 @@ private struct ReviewCompactParticipantRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Text(member.initial)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 28, height: 28)
-                .background(AvatarStack.colors[member.colorIndex % AvatarStack.colors.count], in: Circle())
+            ProfileAvatar(
+                name: member.name,
+                fallback: member.initial,
+                size: 28,
+                tint: AvatarStack.colors[member.colorIndex % AvatarStack.colors.count]
+            )
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(member.name)
@@ -4670,11 +4678,12 @@ private struct ReviewParticipantRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Text(member.initial)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 32, height: 32)
-                .background(AvatarStack.colors[member.colorIndex % AvatarStack.colors.count], in: Circle())
+            ProfileAvatar(
+                name: member.name,
+                fallback: member.initial,
+                size: 32,
+                tint: AvatarStack.colors[member.colorIndex % AvatarStack.colors.count]
+            )
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(member.name)
@@ -4822,11 +4831,7 @@ private struct HostParticipantRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Text("나")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 32, height: 32)
-                .background(Color(uiColor: .systemIndigo), in: Circle())
+            ProfileAvatar(name: "나", fallback: "나", size: 32, tint: Color(uiColor: .systemIndigo))
 
             VStack(alignment: .leading, spacing: 3) {
                 Text("나")
@@ -4866,11 +4871,12 @@ private struct SelectedParticipantRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Text(member.initial)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 32, height: 32)
-                .background(AvatarStack.colors[member.colorIndex % AvatarStack.colors.count], in: Circle())
+            ProfileAvatar(
+                name: member.name,
+                fallback: member.initial,
+                size: 32,
+                tint: AvatarStack.colors[member.colorIndex % AvatarStack.colors.count]
+            )
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(member.name)
@@ -5029,11 +5035,12 @@ private struct ParticipantPickerSheet: View {
             toggleMember(member)
         } label: {
             HStack(spacing: 12) {
-                Text(member.initial)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 34, height: 34)
-                    .background(AvatarStack.colors[member.colorIndex % AvatarStack.colors.count], in: Circle())
+                ProfileAvatar(
+                    name: member.name,
+                    fallback: member.initial,
+                    size: 34,
+                    tint: AvatarStack.colors[member.colorIndex % AvatarStack.colors.count]
+                )
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(member.name)
@@ -6113,21 +6120,98 @@ private struct ResponseProgressView: View {
     }
 }
 
+private enum ProfileAsset {
+    static func imageName(for name: String) -> String? {
+        imageNames[normalized(name)]
+    }
+
+    static func fallbackText(for name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmed.isEmpty else {
+            return "?"
+        }
+
+        if trimmed.count <= 2 {
+            return trimmed
+        }
+
+        return String(trimmed.prefix(1))
+    }
+
+    private static func normalized(_ name: String) -> String {
+        name
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: " ", with: "")
+    }
+
+    private static let imageNames: [String: String] = [
+        "나": "ProfileHeesu",
+        "강태호": "ProfileTaeho",
+        "이희수": "ProfileHeesu",
+        "김민준": "ProfileMinjun",
+        "문준호": "ProfileJoonho",
+        "박도윤": "ProfileDoyoon",
+        "송승아": "ProfileSeungah",
+        "신나리": "ProfileNari",
+        "오유진": "ProfileYujin",
+        "윤재현": "ProfileJaehyun",
+        "이서연": "ProfileSeoyeon",
+        "임다혜": "ProfileDahye",
+        "장혜진": "ProfileHyejin",
+        "정지우": "ProfileJiwoo",
+        "최하린": "ProfileHarin",
+        "한유나": "ProfileYuna"
+    ]
+}
+
+private struct ProfileAvatar: View {
+    let name: String
+    var fallback: String?
+    var size: CGFloat
+    var tint: Color
+    var borderColor: Color = Color(uiColor: .secondarySystemBackground)
+    var borderWidth: CGFloat = 0
+
+    var body: some View {
+        Group {
+            if let imageName = ProfileAsset.imageName(for: name) {
+                Image(imageName)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                Text(fallback ?? ProfileAsset.fallbackText(for: name))
+                    .font(.system(size: max(size * 0.35, 10), weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: size, height: size)
+                    .background(tint, in: Circle())
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay {
+            if borderWidth > 0 {
+                Circle()
+                    .stroke(borderColor, lineWidth: borderWidth)
+            }
+        }
+    }
+}
+
 private struct AvatarStack: View {
     let names: [String]
 
     var body: some View {
         HStack(spacing: -8) {
             ForEach(Array(names.enumerated()), id: \.offset) { index, name in
-                Text(name)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 28, height: 28)
-                    .background(Self.colors[index % Self.colors.count], in: Circle())
-                    .overlay {
-                        Circle()
-                            .stroke(Color(uiColor: .secondarySystemBackground), lineWidth: 2)
-                    }
+                ProfileAvatar(
+                    name: name,
+                    fallback: ProfileAsset.fallbackText(for: name),
+                    size: 28,
+                    tint: Self.colors[index % Self.colors.count],
+                    borderColor: Color(uiColor: .secondarySystemBackground),
+                    borderWidth: 2
+                )
             }
         }
         .frame(height: 28)
@@ -6204,7 +6288,7 @@ private struct HomeMeeting: Identifiable {
             respondedCount: 3,
             status: .collecting,
             stage: .hostAvailability,
-            memberInitials: ["나", "PM", "FE", "BE"],
+            memberInitials: ["나", "김민준", "이서연", "오유진", "송승아"],
             focusDate: Self.makeDate(year: 2026, month: 7, day: 15),
             candidateStartDate: Self.makeDate(year: 2026, month: 7, day: 15),
             candidateEndDate: Self.makeDate(year: 2026, month: 7, day: 18),
@@ -6222,7 +6306,7 @@ private struct HomeMeeting: Identifiable {
             respondedCount: 4,
             status: .ready,
             stage: .bracketReview,
-            memberInitials: ["나", "PO", "UX"],
+            memberInitials: ["나", "문준호", "오유진", "정지우"],
             focusDate: Self.makeDate(year: 2026, month: 7, day: 16),
             candidateStartDate: Self.makeDate(year: 2026, month: 7, day: 16),
             candidateEndDate: Self.makeDate(year: 2026, month: 7, day: 17),
@@ -6240,7 +6324,7 @@ private struct HomeMeeting: Identifiable {
             respondedCount: 2,
             status: .waiting,
             stage: .collectingResponses,
-            memberInitials: ["나", "UR", "DS"],
+            memberInitials: ["나", "정지우", "임다혜", "장혜진", "윤재현", "최하린"],
             focusDate: Self.makeDate(year: 2026, month: 7, day: 21),
             candidateStartDate: Self.makeDate(year: 2026, month: 7, day: 21),
             candidateEndDate: Self.makeDate(year: 2026, month: 7, day: 22),
@@ -6258,7 +6342,7 @@ private struct HomeMeeting: Identifiable {
             respondedCount: 3,
             status: .confirmed,
             stage: .confirmed,
-            memberInitials: ["나", "BD", "MK"],
+            memberInitials: ["나", "한유나", "강태호"],
             focusDate: Self.makeDate(year: 2026, month: 7, day: 14),
             candidateStartDate: Self.makeDate(year: 2026, month: 7, day: 14),
             candidateEndDate: Self.makeDate(year: 2026, month: 7, day: 14),
@@ -6852,6 +6936,7 @@ private struct ScheduleGridView: View {
     let calendar: Calendar
     let onTapSlot: (AvailabilitySlot) -> Void
     let onCommitSlots: (Set<AvailabilitySlot>) -> Void
+    let onEditAvailabilityBlock: (AvailabilityBlockDetail) -> Void
     let onMovePage: (Int) -> Void
 
     @State private var currentTime = Date()
@@ -6920,13 +7005,22 @@ private struct ScheduleGridView: View {
             currentTime = date
         }
         .sheet(item: $selectedAvailabilityBlock) { detail in
-            AvailabilityBlockDetailSheet(detail: detail, calendar: calendar)
+            AvailabilityBlockDetailSheet(
+                detail: detail,
+                calendar: calendar,
+                onEdit: {
+                    selectedAvailabilityBlock = nil
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                        onEditAvailabilityBlock(detail)
+                    }
+                }
+            )
                 .presentationDetents([.height(detail.reason.isEmpty ? 260 : 320), .medium])
                 .presentationDragIndicator(.visible)
         }
         .sheet(item: $selectedTeamResponse) { detail in
             TeamResponseDetailSheet(detail: detail, calendar: calendar)
-                .presentationDetents([.height(430), .medium])
+                .presentationDetents([.height(430), .medium, .large])
                 .presentationDragIndicator(.visible)
         }
     }
@@ -7024,12 +7118,14 @@ private struct ScheduleGridView: View {
         ZStack(alignment: .topLeading) {
             ForEach(availabilityBlocks) { block in
                 let height = CGFloat(block.endHour - block.startHour) * rowHeight - 3
+                let blockWidth = layout.columnWidth
+                let blockCornerRadius: CGFloat = 5
 
                 ZStack {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    RoundedRectangle(cornerRadius: blockCornerRadius, style: .continuous)
                         .fill(block.mode.blockFill)
                         .overlay {
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            RoundedRectangle(cornerRadius: blockCornerRadius, style: .continuous)
                                 .stroke(block.mode.blockStroke, lineWidth: 1)
                         }
                         .overlay(alignment: .topTrailing) {
@@ -7042,15 +7138,15 @@ private struct ScheduleGridView: View {
                             }
                         }
 
-                    hourTicks(for: block, height: height, width: layout.columnWidth)
+                    hourTicks(for: block, height: height, width: blockWidth)
 
                     Text(block.mode.title)
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(block.mode.tint)
                 }
-                .frame(width: layout.columnWidth, height: height)
+                .frame(width: blockWidth, height: height)
                 .clipped()
-                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: blockCornerRadius, style: .continuous))
                 .onTapGesture {
                     selectedAvailabilityBlock = detail(for: block)
                 }
@@ -7068,50 +7164,80 @@ private struct ScheduleGridView: View {
     private func teamResponseLayer(layout: ScheduleGridLayout) -> some View {
         ZStack(alignment: .topLeading) {
             ForEach(teamResponseBlocks) { block in
-                let cellHeight = rowHeight - 3
+                let height = CGFloat(block.endHour - block.startHour) * rowHeight - 3
 
-                VStack(spacing: 1) {
+                ZStack {
                     Text("\(block.summary.availableCount)/\(block.summary.totalCount)")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(block.summary.tint)
                         .monospacedDigit()
 
-                    Text(block.summary.caption)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(block.summary.tint.opacity(0.78))
-                        .lineLimit(1)
-                }
-                .frame(width: layout.columnWidth, height: cellHeight)
-                .background(block.summary.fill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(block.summary.stroke, lineWidth: 1)
-                }
-                .overlay(alignment: .topTrailing) {
                     if block.summary.hasConcern {
-                        Circle()
-                            .fill(block.summary.concernTint)
-                            .frame(width: 5, height: 5)
-                            .padding(.top, 6)
-                            .padding(.trailing, 6)
+                        HStack(spacing: 3) {
+                            if block.summary.burdenCount > 0 {
+                                Circle()
+                                    .fill(Color(uiColor: .systemOrange))
+                                    .frame(width: 5, height: 5)
+                            }
+
+                            if block.summary.unavailableCount > 0 {
+                                Circle()
+                                    .fill(Color(uiColor: .systemRed))
+                                    .frame(width: 5, height: 5)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                        .padding(.top, 6)
+                        .padding(.trailing, 6)
                     }
                 }
-                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .frame(width: layout.columnWidth, height: height)
+                .background(block.summary.fill, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .stroke(block.summary.stroke, lineWidth: 1)
+                }
+                .overlay(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(block.summary.tint)
+                        .frame(width: 3)
+                        .padding(.vertical, 6)
+                        .padding(.leading, 5)
+                }
+                .overlay {
+                    responseHourTicks(for: block, height: height, width: layout.columnWidth)
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                 .onTapGesture {
                     selectedTeamResponse = TeamResponseDetail(
                         date: block.date,
-                        hour: block.hour,
+                        startHour: block.startHour,
+                        endHour: block.endHour,
                         summary: block.summary
                     )
                 }
                 .position(
                     x: layout.xCenter(for: block.dayIndex),
-                    y: yCenter(for: block.hour, height: cellHeight)
+                    y: yCenter(for: block.startHour, height: height)
                 )
             }
         }
         .frame(width: layout.width, height: gridHeight, alignment: .topLeading)
         .animation(blockAnimation, value: teamResponseBlocks)
+    }
+
+    @ViewBuilder
+    private func responseHourTicks(for block: TeamResponseBlock, height: CGFloat, width: CGFloat) -> some View {
+        let span = block.endHour - block.startHour
+
+        if span > 1 {
+            ForEach(1..<span, id: \.self) { offset in
+                Rectangle()
+                    .fill(Color.white.opacity(0.64))
+                    .frame(width: max(width - 14, 0), height: 0.7)
+                    .offset(y: CGFloat(offset) * rowHeight - height / 2)
+            }
+        }
     }
 
     @ViewBuilder
@@ -7394,21 +7520,42 @@ private struct ScheduleGridView: View {
         var blocks: [TeamResponseBlock] = []
 
         for (dayIndex, date) in visibleDates.enumerated() {
+            var currentBlock: TeamResponseBlock?
+
             for hour in workStartHour..<workEndHour {
                 let slot = AvailabilitySlot(date: calendar.startOfDay(for: date), hour: hour)
 
                 guard let summary = teamResponseSummaries[slot] else {
+                    if let currentBlock {
+                        blocks.append(currentBlock)
+                    }
+
+                    currentBlock = nil
                     continue
                 }
 
-                blocks.append(
-                    TeamResponseBlock(
+                if var block = currentBlock,
+                   block.endHour == hour,
+                   block.summary.mergeSignature == summary.mergeSignature {
+                    block.endHour = hour + 1
+                    currentBlock = block
+                } else {
+                    if let currentBlock {
+                        blocks.append(currentBlock)
+                    }
+
+                    currentBlock = TeamResponseBlock(
                         dayIndex: dayIndex,
                         date: calendar.startOfDay(for: date),
-                        hour: hour,
+                        startHour: hour,
+                        endHour: hour + 1,
                         summary: summary
                     )
-                )
+                }
+            }
+
+            if let currentBlock {
+                blocks.append(currentBlock)
             }
         }
 
@@ -7454,11 +7601,12 @@ private struct AvailabilityBlock: Identifiable, Equatable {
 private struct TeamResponseBlock: Identifiable, Equatable {
     let dayIndex: Int
     let date: Date
-    let hour: Int
+    let startHour: Int
+    var endHour: Int
     let summary: TeamResponseSummary
 
     var id: String {
-        "\(dayIndex)-\(hour)-\(summary.availableCount)-\(summary.burdenCount)-\(summary.unavailableCount)"
+        "\(dayIndex)-\(startHour)-\(endHour)-\(summary.mergeSignature)"
     }
 }
 
@@ -7515,6 +7663,20 @@ private struct TeamResponseSummary: Equatable {
         unavailableCount > 0 ? Color(uiColor: .systemRed) : Color(uiColor: .systemOrange)
     }
 
+    var mergeSignature: String {
+        let available = availableNames.sorted().joined(separator: ",")
+        let burden = burdenMembers
+            .map { "\($0.name):\($0.reason)" }
+            .sorted()
+            .joined(separator: ",")
+        let unavailable = unavailableMembers
+            .map { "\($0.name):\($0.reason)" }
+            .sorted()
+            .joined(separator: ",")
+
+        return "\(available)|\(burden)|\(unavailable)"
+    }
+
     var fill: Color {
         tint.opacity(0.12)
     }
@@ -7545,13 +7707,15 @@ private struct AvailabilityBlockDetail: Identifiable {
 private struct TeamResponseDetail: Identifiable {
     let id = UUID()
     let date: Date
-    let hour: Int
+    let startHour: Int
+    let endHour: Int
     let summary: TeamResponseSummary
 }
 
 private struct AvailabilityBlockDetailSheet: View {
     let detail: AvailabilityBlockDetail
     let calendar: Calendar
+    let onEdit: () -> Void
 
     @Environment(\.dismiss) private var dismiss
 
@@ -7614,6 +7778,15 @@ private struct AvailabilityBlockDetailSheet: View {
             .navigationTitle("시간 상세")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if detail.mode.requiresReason {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("편집") {
+                            dismiss()
+                            onEdit()
+                        }
+                    }
+                }
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("완료") {
                         dismiss()
@@ -7646,62 +7819,64 @@ private struct TeamResponseDetailSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("팀원 응답")
-                        .font(.system(size: 30, weight: .semibold))
-                        .foregroundStyle(.primary)
-
-                    HStack(spacing: 8) {
-                        Image(systemName: "calendar")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(detail.summary.tint)
-
-                        Text("\(dateText) · \(detail.hour)시")
-                            .font(.system(size: 16, weight: .semibold))
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("팀원 응답")
+                            .font(.system(size: 30, weight: .semibold))
                             .foregroundStyle(.primary)
+
+                        HStack(spacing: 8) {
+                            Image(systemName: "calendar")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(detail.summary.tint)
+
+                            Text("\(dateText) · \(timeText)")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(.primary)
+                        }
                     }
-                }
-                .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(detail.summary.fill, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .stroke(detail.summary.stroke, lineWidth: 1)
-                }
-
-                VStack(spacing: 0) {
-                    responseRow(
-                        title: "가능",
-                        detail: detail.summary.availableNames.joined(separator: ", "),
-                        tint: Color(uiColor: .systemBlue),
-                        isLast: detail.summary.burdenMembers.isEmpty && detail.summary.unavailableMembers.isEmpty
-                    )
-
-                    if !detail.summary.burdenMembers.isEmpty {
-                        responseReasonRows(
-                            title: "부담",
-                            members: detail.summary.burdenMembers,
-                            tint: Color(uiColor: .systemOrange),
-                            isLast: detail.summary.unavailableMembers.isEmpty
-                        )
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(detail.summary.fill, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .stroke(detail.summary.stroke, lineWidth: 1)
                     }
 
-                    if !detail.summary.unavailableMembers.isEmpty {
-                        responseReasonRows(
-                            title: "불가",
-                            members: detail.summary.unavailableMembers,
-                            tint: Color(uiColor: .systemRed),
-                            isLast: true
-                        )
+                    VStack(spacing: 10) {
+                        ForEach(detail.summary.availableNames, id: \.self) { name in
+                            responseMemberCard(
+                                name: name,
+                                status: "가능",
+                                reason: "참여할 수 있어요",
+                                tint: Color(uiColor: .systemGreen)
+                            )
+                        }
+
+                        ForEach(detail.summary.burdenMembers) { member in
+                            responseMemberCard(
+                                name: member.name,
+                                status: "부담",
+                                reason: member.reason,
+                                tint: Color(uiColor: .systemOrange)
+                            )
+                        }
+
+                        ForEach(detail.summary.unavailableMembers) { member in
+                            responseMemberCard(
+                                name: member.name,
+                                status: "불가",
+                                reason: member.reason,
+                                tint: Color(uiColor: .systemRed)
+                            )
+                        }
                     }
                 }
-                .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-
-                Spacer(minLength: 0)
+                .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                .padding(.top, 18)
+                .padding(.bottom, 18)
             }
-            .padding(.horizontal, LayoutMetrics.horizontalPadding)
-            .padding(.top, 18)
             .background(Color(uiColor: .systemBackground))
             .navigationTitle("응답 상세")
             .navigationBarTitleDisplayMode(.inline)
@@ -7714,6 +7889,54 @@ private struct TeamResponseDetailSheet: View {
                 }
             }
         }
+    }
+
+    private func responseMemberCard(name: String, status: String, reason: String, tint: Color) -> some View {
+        HStack(alignment: .center, spacing: 14) {
+            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                .fill(tint.opacity(0.72))
+                .frame(width: 5)
+                .padding(.vertical, 6)
+
+            ProfileAvatar(
+                name: name,
+                fallback: initial(for: name),
+                size: 42,
+                tint: tint
+            )
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 7) {
+                    Text(name)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    Text(status)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(tint)
+                        .padding(.horizontal, 8)
+                        .frame(height: 24)
+                        .background(tint.opacity(0.12), in: Capsule())
+                }
+
+                Text(reason)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 13)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private func initial(for name: String) -> String {
+        String(name.prefix(1))
     }
 
     private func responseRow(title: String, detail: String, tint: Color, isLast: Bool) -> some View {
@@ -7777,6 +8000,10 @@ private struct TeamResponseDetailSheet: View {
         let weekday = weekdaySymbols[min(weekdayIndex, weekdaySymbols.count - 1)]
 
         return "\(components.month ?? 0)월 \(components.day ?? 0)일 (\(weekday))"
+    }
+
+    private var timeText: String {
+        "\(detail.startHour)시 - \(detail.endHour)시"
     }
 }
 
