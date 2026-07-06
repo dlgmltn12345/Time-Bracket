@@ -350,6 +350,7 @@ private struct CalendarScreen: View {
     @State private var isShareConfirmationPresented = false
     @State private var schedulePageIndex = 0
     @State private var sharedCalendarViewMode: SharedCalendarViewMode = .teamResponses
+    @State private var isDerivationTransitionActive = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -408,6 +409,8 @@ private struct CalendarScreen: View {
                         }
                         .frame(height: clampedCalendarHeight)
                         .simultaneousGesture(calendarMonthSwipeGesture)
+                        .opacity(isDerivationTransitionActive ? 0 : 1)
+                        .offset(y: isDerivationTransitionActive ? -74 : 0)
 
                         CalendarDragHandle(
                             calendarHeight: $calendarHeight,
@@ -416,6 +419,8 @@ private struct CalendarScreen: View {
                             settleAnimation: calendarAnimation
                         )
                         .frame(height: handleBandHeight)
+                        .opacity(isDerivationTransitionActive ? 0 : 1)
+                        .offset(y: isDerivationTransitionActive ? -74 : 0)
 
                         ZStack {
                             Color.primary
@@ -452,9 +457,21 @@ private struct CalendarScreen: View {
                             )
                         }
                         .frame(height: scheduleHeight)
+                        .scaleEffect(isDerivationTransitionActive ? 1.035 : 1, anchor: .top)
+                        .offset(y: isDerivationTransitionActive ? -34 : 0)
+                        .opacity(isDerivationTransitionActive ? 0.16 : 1)
+                    }
+                    .overlay(alignment: .top) {
+                        if isDerivationTransitionActive {
+                            CalendarDerivationTransitionOverlay()
+                                .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                                .padding(.top, 28)
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
+                        }
                     }
                 }
             }
+            .animation(.spring(response: 0.52, dampingFraction: 0.9, blendDuration: 0.06), value: isDerivationTransitionActive)
 
             Group {
                 if isSharedCalendar {
@@ -463,7 +480,7 @@ private struct CalendarScreen: View {
                         respondedCount: simulatedRespondedCount,
                         memberCount: meeting.memberCount,
                         onCompare: {
-                            onCompareResponses(meeting.id)
+                            startDerivationTransition()
                         }
                     )
                 } else {
@@ -484,6 +501,8 @@ private struct CalendarScreen: View {
             }
             .padding(.horizontal, LayoutMetrics.horizontalPadding)
             .padding(.bottom, 12)
+            .opacity(isDerivationTransitionActive ? 0 : 1)
+            .offset(y: isDerivationTransitionActive ? 28 : 0)
         }
         .background(Color(uiColor: .systemBackground))
         .sheet(item: $reasonDraft) { draft in
@@ -719,6 +738,20 @@ private struct CalendarScreen: View {
 
     private func isExcludedSlot(_ slot: AvailabilitySlot) -> Bool {
         meeting.excludedTimeRule.excludes(hour: slot.hour, date: slot.date, calendar: calendar)
+    }
+
+    private func startDerivationTransition() {
+        guard !isDerivationTransitionActive else {
+            return
+        }
+
+        withAnimation(.spring(response: 0.52, dampingFraction: 0.9, blendDuration: 0.06)) {
+            isDerivationTransitionActive = true
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.78) {
+            onCompareResponses(meeting.id)
+        }
     }
 
     private var calendarMonthSwipeGesture: some Gesture {
@@ -1059,6 +1092,72 @@ private struct SharedCalendarToolbar: View {
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct CalendarDerivationTransitionOverlay: View {
+    var body: some View {
+        VStack(spacing: 14) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(Color(uiColor: .systemBlue).opacity(0.12))
+
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(Color(uiColor: .systemBlue))
+                }
+                .frame(width: 42, height: 42)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("회의 시간을 도출하고 있어요")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(.primary)
+
+                    Text("응답 블럭을 후보 카드로 정리합니다")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+            }
+
+            HStack(spacing: 9) {
+                ForEach(0..<3, id: \.self) { index in
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color(uiColor: .systemBackground))
+                        .overlay(alignment: .topTrailing) {
+                            if index == 2 {
+                                Circle()
+                                    .fill(Color(uiColor: .systemRed).opacity(0.82))
+                                    .frame(width: 5, height: 5)
+                                    .padding(8)
+                            }
+                        }
+                        .frame(height: 96)
+                        .overlay(alignment: .bottomLeading) {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Capsule()
+                                    .fill(Color(uiColor: .tertiaryLabel).opacity(0.22))
+                                    .frame(width: index == 0 ? 54 : 42, height: 7)
+
+                                Capsule()
+                                    .fill(Color(uiColor: .tertiaryLabel).opacity(0.14))
+                                    .frame(width: index == 1 ? 48 : 62, height: 7)
+                            }
+                            .padding(12)
+                        }
+                        .offset(y: CGFloat(index) * 6)
+                }
+            }
+        }
+        .padding(HomeGridMetrics.cardPadding)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.white.opacity(0.5), lineWidth: 0.8)
+        }
+        .shadow(color: Color.black.opacity(0.08), radius: 18, y: 8)
     }
 }
 
@@ -1848,34 +1947,882 @@ private struct ResponseCollectionScreen: View {
 private struct BracketReviewScreen: View {
     let meeting: HomeMeeting
 
+    @State private var phase: MeetingDerivationPhase = .preparing
+
+    private var calendar: Calendar {
+        var calendar = Calendar.current
+        calendar.locale = Locale(identifier: "ko_KR")
+        return calendar
+    }
+
+    private var candidates: [MeetingDecisionCandidate] {
+        MeetingDecisionCandidate.makeCandidates(for: meeting, calendar: calendar)
+    }
+
+    private var rankedCandidates: [MeetingDecisionCandidate] {
+        candidates.sorted { lhs, rhs in
+            if lhs.score == rhs.score {
+                return lhs.date < rhs.date || (calendar.isDate(lhs.date, inSameDayAs: rhs.date) && lhs.hour < rhs.hour)
+            }
+
+            return lhs.score > rhs.score
+        }
+    }
+
+    private var finalCandidates: [MeetingDecisionCandidate] {
+        Array(rankedCandidates.prefix(2))
+    }
+
+    private var sequenceCandidates: [MeetingDecisionCandidate] {
+        let orderedCandidates = candidates.sorted { lhs, rhs in
+            if calendar.isDate(lhs.date, inSameDayAs: rhs.date) {
+                return lhs.hour < rhs.hour
+            }
+
+            return lhs.date < rhs.date
+        }
+
+        var selectedCandidates = Array(orderedCandidates.prefix(8))
+
+        for candidate in finalCandidates where !selectedCandidates.contains(candidate) {
+            selectedCandidates.append(candidate)
+        }
+
+        return Array(selectedCandidates.prefix(8))
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            WorkspaceHeader(title: "브래킷 검토")
+            WorkspaceHeader(title: "회의 도출")
             MeetingContextBar(meeting: meeting)
 
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: HomeGridMetrics.gap) {
-                    WorkspaceStatusCard(
-                        title: "후보 시간 비교 준비",
-                        detail: "시스템 추천과 주최자 판단을 함께 반영",
-                        symbolName: "trophy",
-                        tint: Color(uiColor: .systemPurple)
+            GeometryReader { proxy in
+                ZStack(alignment: .top) {
+                    DerivationCalendarGhost(
+                        candidates: sequenceCandidates,
+                        calendar: calendar,
+                        phase: phase
                     )
+                    .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                    .padding(.top, 12)
 
-                    CandidateTimeBlock()
+                    VStack(spacing: 14) {
+                        DerivationStatusHeader(
+                            phase: phase,
+                            candidateCount: sequenceCandidates.count,
+                            finalCount: finalCandidates.count
+                        )
+                        .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                        .padding(.top, phase == .preparing ? 190 : 20)
 
-                    WorkspaceActionCard(
-                        title: "최종 시간 선택",
-                        detail: "추천 후보 중 하나를 확정",
-                        buttonTitle: "확정하기"
-                    )
+                        DerivationCandidateStage(
+                            phase: phase,
+                            candidates: sequenceCandidates,
+                            finalCandidates: finalCandidates,
+                            calendar: calendar
+                        )
+                        .padding(.horizontal, LayoutMetrics.horizontalPadding)
+
+                        if phase == .final {
+                            Button {
+                                print("Confirm recommended candidate")
+                            } label: {
+                                Text("추천안으로 확정하기")
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 46)
+                                    .background(Color(uiColor: .systemBlue), in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
                 }
-                .padding(.horizontal, LayoutMetrics.horizontalPadding)
-                .padding(.top, 10)
-                .padding(.bottom, 88)
+                .animation(.spring(response: 0.62, dampingFraction: 0.9, blendDuration: 0.06), value: phase)
             }
         }
         .background(Color(uiColor: .systemBackground))
+        .onAppear {
+            startDerivationSequence()
+        }
+        .onChange(of: meeting.id) { _, _ in
+            startDerivationSequence()
+        }
+    }
+
+    private func startDerivationSequence() {
+        phase = .preparing
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            withAnimation(.spring(response: 0.66, dampingFraction: 0.9)) {
+                phase = .filtering
+            }
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.75) {
+            withAnimation(.spring(response: 0.7, dampingFraction: 0.9)) {
+                phase = .comparing
+            }
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.45) {
+            withAnimation(.spring(response: 0.72, dampingFraction: 0.88)) {
+                phase = .final
+            }
+        }
+    }
+}
+
+private enum MeetingDerivationPhase: Int {
+    case preparing
+    case filtering
+    case comparing
+    case final
+
+    var title: String {
+        switch self {
+        case .preparing:
+            return "응답 블럭을 후보로 펼치는 중"
+        case .filtering:
+            return "불가 시간이 있는 후보를 제외 중"
+        case .comparing:
+            return "부담이 적은 시간을 비교 중"
+        case .final:
+            return "최종 후보 2개가 남았어요"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .preparing:
+            return "요일별 시간 블럭을 회의 후보 카드로 변환합니다"
+        case .filtering:
+            return "필참 조건과 불가 응답을 먼저 확인합니다"
+        case .comparing:
+            return "가능 인원, 부담 수, 시간 선호를 함께 계산합니다"
+        case .final:
+            return "시스템 추천안을 확인하고 주최자가 확정합니다"
+        }
+    }
+}
+
+private struct DerivationStatusHeader: View {
+    let phase: MeetingDerivationPhase
+    let candidateCount: Int
+    let finalCount: Int
+
+    var body: some View {
+        HStack(spacing: 13) {
+            ZStack {
+                Circle()
+                    .fill(Color(uiColor: .systemBlue).opacity(0.12))
+
+                Image(systemName: phase == .final ? "checkmark" : "sparkles")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(Color(uiColor: .systemBlue))
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .frame(width: 42, height: 42)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(phase.title)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .contentTransition(.opacity)
+
+                Text(phase.detail)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .contentTransition(.opacity)
+            }
+
+            Spacer()
+
+            Text(phase == .final ? "\(finalCount)안" : "\(candidateCount)개")
+                .font(.system(size: 13, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(Color(uiColor: .systemBlue))
+                .padding(.horizontal, 10)
+                .frame(height: 28)
+                .background(Color(uiColor: .systemBlue).opacity(0.1), in: Capsule())
+        }
+        .padding(HomeGridMetrics.cardPadding)
+        .frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemBackground), in: HomeGridMetrics.cardShape)
+    }
+}
+
+private struct DerivationCalendarGhost: View {
+    let candidates: [MeetingDecisionCandidate]
+    let calendar: Calendar
+    let phase: MeetingDerivationPhase
+
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 5), count: 5)
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Text("응답 시간표")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                Spacer()
+
+                Text("6/6")
+                    .font(.system(size: 12, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .frame(height: 24)
+                    .background(Color(uiColor: .systemFill).opacity(0.55), in: Capsule())
+            }
+
+            LazyVGrid(columns: columns, spacing: 5) {
+                ForEach(Array(candidates.prefix(10).enumerated()), id: \.element.id) { index, candidate in
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color(uiColor: .tertiarySystemFill).opacity(candidate.unavailableCount > 0 ? 0.46 : 0.58))
+                        .overlay(alignment: .topTrailing) {
+                            if candidate.unavailableCount > 0 {
+                                Circle()
+                                    .fill(Color(uiColor: .systemRed).opacity(0.82))
+                                    .frame(width: 4.5, height: 4.5)
+                                    .padding(5)
+                            }
+                        }
+                        .frame(height: 32)
+                        .opacity(phase == .preparing ? 1 : 0.18)
+                        .scaleEffect(phase == .preparing ? 1 : 0.96)
+                        .offset(y: phase == .preparing ? 0 : -10)
+                        .animation(.spring(response: 0.58, dampingFraction: 0.9).delay(Double(index) * 0.035), value: phase)
+                }
+            }
+
+            Capsule()
+                .fill(Color.primary.opacity(0.82))
+                .frame(width: 44, height: 4)
+                .padding(.top, 2)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity)
+        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .opacity(phase == .preparing ? 1 : 0.28)
+        .scaleEffect(phase == .preparing ? 1 : 0.92, anchor: .top)
+        .offset(y: phase == .preparing ? 0 : -26)
+    }
+}
+
+private struct DerivationCandidateStage: View {
+    let phase: MeetingDerivationPhase
+    let candidates: [MeetingDecisionCandidate]
+    let finalCandidates: [MeetingDecisionCandidate]
+    let calendar: Calendar
+
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 2)
+
+    var body: some View {
+        Group {
+            if phase == .final {
+                HStack(spacing: 10) {
+                    ForEach(Array(finalCandidates.enumerated()), id: \.element.id) { index, candidate in
+                        DerivationFinalCandidateCard(
+                            index: index,
+                            candidate: candidate,
+                            calendar: calendar
+                        )
+                    }
+                }
+                .transition(.asymmetric(
+                    insertion: .scale(scale: 0.94).combined(with: .opacity),
+                    removal: .opacity
+                ))
+            } else {
+                LazyVGrid(columns: columns, spacing: 10) {
+                    ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
+                        DerivationCandidateCard(
+                            candidate: candidate,
+                            calendar: calendar,
+                            isFinalist: finalCandidates.contains(candidate),
+                            phase: phase
+                        )
+                        .animation(.spring(response: 0.62, dampingFraction: 0.88).delay(Double(index) * 0.045), value: phase)
+                    }
+                }
+                .transition(.opacity)
+            }
+        }
+    }
+}
+
+private struct DerivationCandidateCard: View {
+    let candidate: MeetingDecisionCandidate
+    let calendar: Calendar
+    let isFinalist: Bool
+    let phase: MeetingDerivationPhase
+
+    private var isFilteredOut: Bool {
+        candidate.unavailableCount > 0
+    }
+
+    private var isComparingOut: Bool {
+        phase == .comparing && !isFinalist
+    }
+
+    private var cardOpacity: Double {
+        if phase == .filtering, isFilteredOut {
+            return 0.18
+        }
+
+        if isComparingOut {
+            return 0.16
+        }
+
+        return 1
+    }
+
+    private var cardScale: CGFloat {
+        if phase == .filtering, isFilteredOut {
+            return 0.92
+        }
+
+        if isComparingOut {
+            return 0.9
+        }
+
+        return 1
+    }
+
+    private var yOffset: CGFloat {
+        if phase == .filtering, isFilteredOut {
+            return 18
+        }
+
+        if isComparingOut {
+            return 26
+        }
+
+        return 0
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Text(candidate.dayText(calendar: calendar))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Spacer()
+
+                Circle()
+                    .fill(candidate.statusColor)
+                    .frame(width: 6, height: 6)
+            }
+
+            Text(candidate.timeText)
+                .font(.system(size: 22, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(.primary)
+
+            HStack(spacing: 5) {
+                Text("\(candidate.score)")
+                    .font(.system(size: 12, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(Color(uiColor: .systemBlue))
+
+                Text(candidate.reasonText)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 118, alignment: .topLeading)
+        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                .stroke(isFinalist && phase == .comparing ? Color(uiColor: .systemBlue).opacity(0.35) : Color.clear, lineWidth: 1)
+        }
+        .opacity(cardOpacity)
+        .scaleEffect(cardScale)
+        .offset(y: yOffset)
+    }
+}
+
+private struct DerivationFinalCandidateCard: View {
+    let index: Int
+    let candidate: MeetingDecisionCandidate
+    let calendar: Calendar
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(index == 0 ? "추천안" : "대안")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(index == 0 ? Color(uiColor: .systemBlue) : .secondary)
+                    .padding(.horizontal, 9)
+                    .frame(height: 26)
+                    .background(
+                        (index == 0 ? Color(uiColor: .systemBlue).opacity(0.1) : Color(uiColor: .systemFill).opacity(0.62)),
+                        in: Capsule()
+                    )
+
+                Spacer()
+
+                Text("\(candidate.score)")
+                    .font(.system(size: 14, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(index == 0 ? Color(uiColor: .systemBlue) : .secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(candidate.dayText(calendar: calendar))
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                Text(candidate.timeText)
+                    .font(.system(size: 26, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.primary)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                MeetingDecisionMetric(text: "\(candidate.requiredAvailable)/\(candidate.requiredTotal) 필참", color: Color(uiColor: .systemGreen))
+                MeetingDecisionMetric(text: "\(candidate.optionalAvailable)/\(candidate.optionalTotal) 선택", color: Color(uiColor: .systemBlue))
+                MeetingDecisionMetric(text: candidate.reasonText, color: candidate.statusColor)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 190, alignment: .topLeading)
+        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(index == 0 ? Color(uiColor: .systemBlue).opacity(0.28) : Color.clear, lineWidth: 1)
+        }
+    }
+}
+
+private struct DecisionOverviewCard: View {
+    let candidateCount: Int
+    let finalCount: Int
+    let memberCount: Int
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(Color(uiColor: .systemBlue))
+                .frame(width: 42, height: 42)
+                .background(Color(uiColor: .systemBlue).opacity(0.12), in: Circle())
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("필참 조건을 먼저 통과한 후보")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                Text("\(candidateCount)개 후보를 비교해 최종 \(finalCount)안을 남겼어요")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Text("\(memberCount)/\(memberCount)")
+                .font(.system(size: 13, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(Color(uiColor: .systemBlue))
+                .padding(.horizontal, 10)
+                .frame(height: 28)
+                .background(Color(uiColor: .systemBlue).opacity(0.1), in: Capsule())
+        }
+        .padding(HomeGridMetrics.cardPadding)
+        .frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemBackground), in: HomeGridMetrics.cardShape)
+    }
+}
+
+private struct DailyCandidateExtractionCard: View {
+    let candidates: [MeetingDecisionCandidate]
+    let calendar: Calendar
+
+    private var dayBuckets: [MeetingDecisionDayBucket] {
+        let grouped = Dictionary(grouping: candidates) { candidate in
+            calendar.startOfDay(for: candidate.date)
+        }
+
+        return grouped.keys.sorted().map { date in
+            MeetingDecisionDayBucket(date: date, candidates: grouped[date, default: []].sorted { $0.score > $1.score })
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            HStack {
+                Text("요일별 후보")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                Spacer()
+
+                Text("최대 2개씩")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 9)
+                    .frame(height: 25)
+                    .background(Color(uiColor: .systemBackground), in: Capsule())
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(dayBuckets) { bucket in
+                        VStack(alignment: .leading, spacing: 9) {
+                            Text(dayTitle(for: bucket.date))
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(.primary)
+
+                            ForEach(bucket.candidates) { candidate in
+                                DailyCandidatePill(candidate: candidate)
+                            }
+                        }
+                        .padding(10)
+                        .frame(width: 118, alignment: .topLeading)
+                        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                }
+                .padding(.vertical, 1)
+            }
+        }
+        .padding(HomeGridMetrics.cardPadding)
+        .background(Color(uiColor: .secondarySystemBackground), in: HomeGridMetrics.cardShape)
+    }
+
+    private func dayTitle(for date: Date) -> String {
+        let day = calendar.component(.day, from: date)
+        let weekdaySymbols = ["일", "월", "화", "수", "목", "금", "토"]
+        let weekday = weekdaySymbols[max(calendar.component(.weekday, from: date) - 1, 0)]
+        return "\(day)일 \(weekday)"
+    }
+}
+
+private struct DailyCandidatePill: View {
+    let candidate: MeetingDecisionCandidate
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(candidate.statusColor)
+                .frame(width: 5, height: 5)
+
+            Text(candidate.timeText)
+                .font(.system(size: 12, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(.primary)
+
+            Spacer(minLength: 0)
+
+            Text("\(candidate.score)")
+                .font(.system(size: 11, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 28)
+        .background(Color(uiColor: .secondarySystemBackground), in: Capsule())
+    }
+}
+
+private struct DecisionTournamentCard: View {
+    let candidates: [MeetingDecisionCandidate]
+    let calendar: Calendar
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            Text("비교 과정")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.primary)
+
+            VStack(spacing: 8) {
+                ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
+                    HStack(spacing: 10) {
+                        Text(index < 2 ? "유지" : "소거")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(index < 2 ? Color(uiColor: .systemBlue) : Color(uiColor: .tertiaryLabel))
+                            .frame(width: 34, height: 24)
+                            .background(
+                                (index < 2 ? Color(uiColor: .systemBlue).opacity(0.1) : Color(uiColor: .systemFill).opacity(0.58)),
+                                in: Capsule()
+                            )
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(candidate.fullDateText(calendar: calendar))
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.primary)
+
+                            Text(candidate.reasonText)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+
+                        Spacer()
+
+                        Text("\(candidate.score)")
+                            .font(.system(size: 13, weight: .semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(index < 2 ? Color(uiColor: .systemBlue) : .secondary)
+                    }
+                    .padding(10)
+                    .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+            }
+        }
+        .padding(HomeGridMetrics.cardPadding)
+        .background(Color(uiColor: .secondarySystemBackground), in: HomeGridMetrics.cardShape)
+    }
+}
+
+private struct FinalMeetingProposalCard: View {
+    let candidates: [MeetingDecisionCandidate]
+    let calendar: Calendar
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            HStack {
+                Text("최종 2안")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                Spacer()
+
+                Text("주최자 확정")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 10) {
+                ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text(index == 0 ? "추천" : "대안")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(index == 0 ? Color(uiColor: .systemBlue) : .secondary)
+                                .padding(.horizontal, 8)
+                                .frame(height: 24)
+                                .background(
+                                    (index == 0 ? Color(uiColor: .systemBlue).opacity(0.1) : Color(uiColor: .systemFill).opacity(0.62)),
+                                    in: Capsule()
+                                )
+
+                            Spacer()
+
+                            Text("\(candidate.score)")
+                                .font(.system(size: 13, weight: .semibold))
+                                .monospacedDigit()
+                                .foregroundStyle(index == 0 ? Color(uiColor: .systemBlue) : .secondary)
+                        }
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(candidate.dayText(calendar: calendar))
+                                .font(.system(size: 17, weight: .semibold))
+                                .foregroundStyle(.primary)
+
+                            Text(candidate.timeText)
+                                .font(.system(size: 14, weight: .semibold))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+
+                        VStack(alignment: .leading, spacing: 5) {
+                            MeetingDecisionMetric(text: "\(candidate.requiredAvailable)/\(candidate.requiredTotal) 필참", color: Color(uiColor: .systemGreen))
+                            MeetingDecisionMetric(text: "\(candidate.optionalAvailable)/\(candidate.optionalTotal) 선택", color: Color(uiColor: .systemBlue))
+                            MeetingDecisionMetric(text: candidate.reasonText, color: candidate.statusColor)
+                        }
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, minHeight: 164, alignment: .topLeading)
+                    .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+            }
+
+            Button {
+                print("Confirm recommended candidate")
+            } label: {
+                Text("추천안으로 확정하기")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+                    .background(Color(uiColor: .systemBlue), in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(HomeGridMetrics.cardPadding)
+        .background(Color(uiColor: .secondarySystemBackground), in: HomeGridMetrics.cardShape)
+    }
+}
+
+private struct MeetingDecisionMetric: View {
+    let text: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(color)
+                .frame(width: 5, height: 5)
+
+            Text(text)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+}
+
+private struct MeetingDecisionDayBucket: Identifiable {
+    let date: Date
+    let candidates: [MeetingDecisionCandidate]
+
+    var id: TimeInterval {
+        date.timeIntervalSinceReferenceDate
+    }
+}
+
+private struct MeetingDecisionCandidate: Identifiable, Hashable {
+    let date: Date
+    let hour: Int
+    let score: Int
+    let requiredAvailable: Int
+    let requiredTotal: Int
+    let optionalAvailable: Int
+    let optionalTotal: Int
+    let burdenCount: Int
+    let unavailableCount: Int
+
+    var id: String {
+        "\(date.timeIntervalSinceReferenceDate)-\(hour)-\(score)-\(burdenCount)-\(unavailableCount)"
+    }
+
+    var timeText: String {
+        "\(String(format: "%02d", hour)):00"
+    }
+
+    var reasonText: String {
+        if unavailableCount > 0 {
+            return "선택 \(unavailableCount)명 불가"
+        }
+
+        if burdenCount > 0 {
+            return "부담 \(burdenCount)명"
+        }
+
+        return "충돌 없음"
+    }
+
+    var statusColor: Color {
+        if unavailableCount > 0 {
+            return Color(uiColor: .systemRed)
+        }
+
+        if burdenCount > 0 {
+            return Color(uiColor: .systemOrange)
+        }
+
+        return Color(uiColor: .systemGreen)
+    }
+
+    func dayText(calendar: Calendar) -> String {
+        let month = calendar.component(.month, from: date)
+        let day = calendar.component(.day, from: date)
+        let weekday = weekdayText(calendar: calendar)
+        return "\(month)월 \(day)일 \(weekday)"
+    }
+
+    func fullDateText(calendar: Calendar) -> String {
+        "\(dayText(calendar: calendar)) \(timeText)"
+    }
+
+    private func weekdayText(calendar: Calendar) -> String {
+        let symbols = ["일", "월", "화", "수", "목", "금", "토"]
+        let index = max(min(calendar.component(.weekday, from: date) - 1, symbols.count - 1), 0)
+        return symbols[index]
+    }
+
+    static func makeCandidates(for meeting: HomeMeeting, calendar: Calendar) -> [MeetingDecisionCandidate] {
+        let dates = candidateDates(from: meeting.candidateStartDate, to: meeting.candidateEndDate, calendar: calendar)
+        let requiredTotal = min(max(meeting.memberCount - 2, 1), 4)
+        let optionalTotal = max(meeting.memberCount - requiredTotal, 0)
+
+        return dates.enumerated().flatMap { dayIndex, date in
+            let dailyCandidates = (9..<18).compactMap { hour -> MeetingDecisionCandidate? in
+                guard !meeting.excludedTimeRule.excludes(hour: hour, date: date, calendar: calendar) else {
+                    return nil
+                }
+
+                let seed = abs(dayIndex * 23 + hour * 17 + meeting.memberCount * 5)
+                let requiredUnavailable = seed % 13 == 0 ? 1 : 0
+
+                guard requiredUnavailable == 0 else {
+                    return nil
+                }
+
+                let optionalUnavailable = optionalTotal > 0 && seed % 7 == 0 ? 1 : 0
+                let burdenCount = seed % 5 == 0 ? 2 : (seed % 3 == 0 ? 1 : 0)
+                let timePreferencePenalty = abs(hour - 14) * 2
+                let score = max(
+                    56,
+                    100 - optionalUnavailable * 11 - burdenCount * 7 - timePreferencePenalty - dayIndex
+                )
+
+                return MeetingDecisionCandidate(
+                    date: calendar.startOfDay(for: date),
+                    hour: hour,
+                    score: score,
+                    requiredAvailable: requiredTotal,
+                    requiredTotal: requiredTotal,
+                    optionalAvailable: max(optionalTotal - optionalUnavailable, 0),
+                    optionalTotal: optionalTotal,
+                    burdenCount: burdenCount,
+                    unavailableCount: optionalUnavailable
+                )
+            }
+
+            return Array(dailyCandidates.sorted { lhs, rhs in
+                if lhs.score == rhs.score {
+                    return lhs.hour < rhs.hour
+                }
+
+                return lhs.score > rhs.score
+            }.prefix(2))
+        }
+    }
+
+    private static func candidateDates(from startDate: Date, to endDate: Date, calendar: Calendar) -> [Date] {
+        let start = calendar.startOfDay(for: startDate)
+        let end = calendar.startOfDay(for: endDate)
+
+        guard start <= end else {
+            return [start]
+        }
+
+        var dates: [Date] = []
+        var current = start
+
+        while current <= end {
+            dates.append(current)
+            guard let nextDate = calendar.date(byAdding: .day, value: 1, to: current) else {
+                break
+            }
+            current = nextDate
+        }
+
+        return dates
     }
 }
 
@@ -1988,50 +2935,6 @@ private struct ParticipantStatusBlock: View {
 
                     Image(systemName: index < meeting.respondedCount ? "checkmark.circle.fill" : "clock")
                         .foregroundStyle(index < meeting.respondedCount ? Color(uiColor: .systemGreen) : Color(uiColor: .systemGray2))
-                }
-            }
-        }
-        .padding(HomeGridMetrics.cardPadding)
-        .background(Color(uiColor: .secondarySystemBackground), in: HomeGridMetrics.cardShape)
-    }
-}
-
-private struct CandidateTimeBlock: View {
-    private let candidates = [
-        ("7월 16일", "14:00 - 15:00", "92점"),
-        ("7월 17일", "10:00 - 11:00", "86점"),
-        ("7월 16일", "15:00 - 16:00", "78점")
-    ]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("추천 후보")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(.primary)
-
-            ForEach(Array(candidates.enumerated()), id: \.offset) { index, candidate in
-                HStack(spacing: 12) {
-                    Text("\(index + 1)")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .frame(width: 30, height: 30)
-                        .background(Color(uiColor: .systemBackground), in: Circle())
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(candidate.0)
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(.primary)
-
-                        Text(candidate.1)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    Text(candidate.2)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.secondary)
                 }
             }
         }
@@ -7716,6 +8619,16 @@ private struct ScheduleGridView: View {
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
                         .stroke(Color(uiColor: .separator).opacity(isComplete ? 0.18 : 0.09), lineWidth: 0.8)
                 }
+                .overlay(alignment: .topTrailing) {
+                    if isComplete && block.summary.unavailableCount > 0 {
+                        Circle()
+                            .fill(Color(uiColor: .systemRed).opacity(0.82))
+                            .frame(width: 5, height: 5)
+                            .padding(.top, 6)
+                            .padding(.trailing, 6)
+                            .transition(.opacity)
+                    }
+                }
                 .overlay {
                     responseHourTicks(for: block, height: height, width: layout.columnWidth)
                         .opacity(isComplete ? 1 : 0.45)
@@ -7775,7 +8688,7 @@ private struct ScheduleGridView: View {
 
         for (blockIndex, block) in blocks.enumerated() {
             let totalCount = max(block.summary.totalCount, 1)
-            let sequence = responseRevealSequence(for: totalCount)
+            let sequence = responseRevealSequence(for: totalCount, block: block, index: blockIndex)
             let baseDelay = responseRevealBaseDelay(for: block, index: blockIndex)
 
             for (stepIndex, count) in sequence.enumerated() {
@@ -7799,10 +8712,24 @@ private struct ScheduleGridView: View {
         return Double(mixedValue) * 0.055
     }
 
-    private func responseRevealSequence(for totalCount: Int) -> [Int] {
+    private func responseRevealSequence(for totalCount: Int, block: TeamResponseBlock, index: Int) -> [Int] {
+        guard totalCount > 1 else {
+            return [1]
+        }
+
+        let seed = abs(block.dayIndex * 31 + block.startHour * 19 + block.endHour * 7 + index * 11)
+        let patterns = [
+            [1, 3, totalCount],
+            [2, 5, totalCount],
+            [1, 2, 5, totalCount],
+            [3, totalCount],
+            [1, 4, totalCount],
+            [2, 3, totalCount]
+        ]
+        let rawPattern = patterns[seed % patterns.count]
         var values: [Int] = []
 
-        for count in [1, 2, 4, totalCount] {
+        for count in rawPattern {
             let normalizedCount = min(max(count, 1), totalCount)
 
             if values.last != normalizedCount {
