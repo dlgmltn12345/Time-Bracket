@@ -54,7 +54,8 @@ struct ContentView: View {
                 events: Self.events,
                 meeting: selectedMeeting,
                 calendar: calendar,
-                onShareWithMembers: shareHostAvailability
+                onShareWithMembers: shareHostAvailability,
+                onCompareResponses: compareCandidateTimes
             )
             .tag(TopTab.calendar)
             .tabItem {
@@ -132,6 +133,16 @@ struct ContentView: View {
         selectedMeeting = updatedMeeting
     }
 
+    private func compareCandidateTimes(for meetingID: String) {
+        guard let meetingIndex = meetings.firstIndex(where: { $0.id == meetingID }) else {
+            return
+        }
+
+        let updatedMeeting = meetings[meetingIndex].readyForComparison()
+        meetings[meetingIndex] = updatedMeeting
+        selectedMeeting = updatedMeeting
+    }
+
     private func makeHomeMeeting(from draft: MeetingDraft) -> HomeMeeting {
         let candidateDates = candidateDates(from: draft.startDate, to: draft.endDate)
         let focusDate = candidateDates.first ?? draft.startDate
@@ -142,6 +153,7 @@ struct ContentView: View {
             subtitle: meetingSubtitle(from: draft),
             dateRange: dateRangeText(for: candidateDates),
             timeRange: draft.availabilityWindowText,
+            excludedTimeRule: draft.excludedTimeRule,
             memberCount: draft.members.count + 1,
             respondedCount: 0,
             status: .waiting,
@@ -227,6 +239,7 @@ private struct MeetingWorkspaceScreen: View {
     let meeting: HomeMeeting?
     let calendar: Calendar
     let onShareWithMembers: (String) -> Void
+    let onCompareResponses: (String) -> Void
 
     var body: some View {
         if let meeting {
@@ -241,7 +254,8 @@ private struct MeetingWorkspaceScreen: View {
                     events: events,
                     meeting: meeting,
                     calendar: calendar,
-                    onShareWithMembers: onShareWithMembers
+                    onShareWithMembers: onShareWithMembers,
+                    onCompareResponses: onCompareResponses
                 )
             case .bracketReview:
                 BracketReviewScreen(meeting: meeting)
@@ -298,6 +312,24 @@ private enum LayoutMetrics {
     }
 }
 
+private enum SharedCalendarViewMode: String, CaseIterable, Identifiable {
+    case mySchedule
+    case teamResponses
+
+    var id: String {
+        rawValue
+    }
+
+    var title: String {
+        switch self {
+        case .mySchedule:
+            return "내 일정"
+        case .teamResponses:
+            return "팀원 응답"
+        }
+    }
+}
+
 private struct CalendarScreen: View {
     @Binding var selectedDate: Date?
     @Binding var displayedMonth: Date
@@ -309,6 +341,7 @@ private struct CalendarScreen: View {
     let meeting: HomeMeeting
     let calendar: Calendar
     let onShareWithMembers: (String) -> Void
+    let onCompareResponses: (String) -> Void
 
     @State private var availabilityMode: AvailabilityMode = .available
     @State private var availabilityEntries: [AvailabilitySlot: AvailabilityEntry] = [:]
@@ -316,6 +349,7 @@ private struct CalendarScreen: View {
     @State private var isHostAvailabilityComplete = false
     @State private var isShareConfirmationPresented = false
     @State private var schedulePageIndex = 0
+    @State private var sharedCalendarViewMode: SharedCalendarViewMode = .teamResponses
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -392,9 +426,11 @@ private struct CalendarScreen: View {
                                 pageIndex: schedulePageIndex,
                                 pageCount: scheduleDatePages.count,
                                 events: events,
-                                availabilityEntries: availabilityEntries,
-                                teamResponseSummaries: isSharedCalendar ? teamResponseSummaries : [:],
-                                isResponseMode: isSharedCalendar,
+                                availabilityEntries: scheduleAvailabilityEntries,
+                                teamResponseSummaries: isViewingTeamResponses ? teamResponseSummaries : [:],
+                                excludedTimeRule: meeting.excludedTimeRule,
+                                isResponseMode: isViewingTeamResponses,
+                                allowsAvailabilityEditing: !isSharedCalendar,
                                 selectedAvailabilityMode: availabilityMode,
                                 rowHeight: scheduleRowHeight,
                                 bottomContentInset: toolbarReservedInset,
@@ -423,10 +459,11 @@ private struct CalendarScreen: View {
             Group {
                 if isSharedCalendar {
                     SharedCalendarToolbar(
+                        selectedViewMode: $sharedCalendarViewMode,
                         respondedCount: simulatedRespondedCount,
                         memberCount: meeting.memberCount,
                         onCompare: {
-                            print("Open candidate comparison")
+                            onCompareResponses(meeting.id)
                         }
                     )
                 } else {
@@ -490,8 +527,20 @@ private struct CalendarScreen: View {
         meeting.stage == .collectingResponses
     }
 
+    private var isViewingTeamResponses: Bool {
+        isSharedCalendar && sharedCalendarViewMode == .teamResponses
+    }
+
     private var simulatedRespondedCount: Int {
-        min(max(meeting.respondedCount, max(meeting.memberCount - 2, 1)), meeting.memberCount)
+        meeting.memberCount
+    }
+
+    private var scheduleAvailabilityEntries: [AvailabilitySlot: AvailabilityEntry] {
+        guard isSharedCalendar, availabilityEntries.isEmpty else {
+            return availabilityEntries
+        }
+
+        return prototypeHostAvailabilityEntries
     }
 
     private var monthPickerDate: Binding<Date> {
@@ -570,7 +619,33 @@ private struct CalendarScreen: View {
             (9..<18).map { hour in
                 AvailabilitySlot(date: calendar.startOfDay(for: date), hour: hour)
             }
+            .filter { !isExcludedSlot($0) }
         }
+    }
+
+    private var prototypeHostAvailabilityEntries: [AvailabilitySlot: AvailabilityEntry] {
+        var entries: [AvailabilitySlot: AvailabilityEntry] = [:]
+
+        for (dayIndex, date) in candidateDates.enumerated() {
+            for hour in 9..<18 {
+                let slot = AvailabilitySlot(date: calendar.startOfDay(for: date), hour: hour)
+                guard !isExcludedSlot(slot) else {
+                    continue
+                }
+
+                let seed = dayIndex * 7 + hour
+
+                if seed % 11 == 0 {
+                    entries[slot] = AvailabilityEntry(mode: .unavailable, reason: "이미 잡힌 업무")
+                } else if seed % 6 == 0 {
+                    entries[slot] = AvailabilityEntry(mode: .burden, reason: "앞뒤 일정이 붙어 있음")
+                } else {
+                    entries[slot] = AvailabilityEntry(mode: .available, reason: nil)
+                }
+            }
+        }
+
+        return entries
     }
 
     private var teamResponseSummaries: [AvailabilitySlot: TeamResponseSummary] {
@@ -586,6 +661,10 @@ private struct CalendarScreen: View {
         for (dayIndex, date) in candidateDates.enumerated() {
             for hour in 9..<18 {
                 let slot = AvailabilitySlot(date: calendar.startOfDay(for: date), hour: hour)
+                guard !isExcludedSlot(slot) else {
+                    continue
+                }
+
                 var available: [String] = []
                 var burden: [TeamResponseReason] = []
                 var unavailable: [TeamResponseReason] = []
@@ -636,6 +715,10 @@ private struct CalendarScreen: View {
 
     private var availabilityStateAnimation: Animation {
         .interactiveSpring(response: 0.24, dampingFraction: 0.92, blendDuration: 0.04)
+    }
+
+    private func isExcludedSlot(_ slot: AvailabilitySlot) -> Bool {
+        meeting.excludedTimeRule.excludes(hour: slot.hour, date: slot.date, calendar: calendar)
     }
 
     private var calendarMonthSwipeGesture: some Gesture {
@@ -918,30 +1001,43 @@ private struct AvailabilityInputToolbar: View {
 }
 
 private struct SharedCalendarToolbar: View {
+    @Binding var selectedViewMode: SharedCalendarViewMode
+
     let respondedCount: Int
     let memberCount: Int
     let onCompare: () -> Void
 
+    private var canCompare: Bool {
+        memberCount > 0 && respondedCount >= memberCount
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             HStack(spacing: 5) {
-                toolbarChip("내 입력", isSelected: false)
-                toolbarChip("팀원 응답", isSelected: true)
+                ForEach(SharedCalendarViewMode.allCases) { mode in
+                    toolbarChip(mode.title, isSelected: selectedViewMode == mode) {
+                        withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
+                            selectedViewMode = mode
+                        }
+                    }
+                }
             }
             .padding(3)
             .frame(maxWidth: .infinity)
             .background(Color(uiColor: .secondarySystemFill).opacity(0.72), in: Capsule())
 
             Button(action: onCompare) {
-                Label("후보 비교", systemImage: "sparkles")
+                Label(canCompare ? "회의 도출하기" : "\(respondedCount)/\(memberCount)", systemImage: canCompare ? "sparkles" : "clock")
                     .font(.system(size: 14, weight: .semibold))
                     .labelStyle(.titleAndIcon)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(canCompare ? .white : Color(uiColor: .tertiaryLabel))
                     .padding(.horizontal, 14)
                     .frame(height: 38)
-                    .background(Color(uiColor: .systemBlue), in: Capsule())
+                    .background(canCompare ? Color(uiColor: .systemBlue) : Color(uiColor: .systemGray5), in: Capsule())
             }
             .buttonStyle(.plain)
+            .disabled(!canCompare)
+            .opacity(canCompare ? 1 : 0.78)
         }
         .padding(6)
         .background(.regularMaterial, in: Capsule())
@@ -950,24 +1046,19 @@ private struct SharedCalendarToolbar: View {
                 .stroke(Color.white.opacity(0.5), lineWidth: 0.8)
         }
         .shadow(color: Color.black.opacity(0.08), radius: 16, y: 7)
-        .overlay(alignment: .top) {
-            Text("\(respondedCount)/\(memberCount) 응답")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 9)
-                .frame(height: 22)
-                .background(.regularMaterial, in: Capsule())
-                .offset(y: -28)
-        }
     }
 
-    private func toolbarChip(_ title: String, isSelected: Bool) -> some View {
-        Text(title)
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(isSelected ? .white : .secondary)
-            .frame(height: 34)
-            .frame(maxWidth: .infinity)
-            .background(isSelected ? Color(uiColor: .label) : Color.clear, in: Capsule())
+    private func toolbarChip(_ title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(isSelected ? .white : .secondary)
+                .frame(height: 34)
+                .frame(maxWidth: .infinity)
+                .background(isSelected ? Color(uiColor: .label) : Color.clear, in: Capsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -1024,7 +1115,7 @@ private struct ShareCalendarSheet: View {
 
                         Spacer(minLength: 8)
 
-                        AvatarStack(names: inviteeInitials.prefix(4).map { $0 })
+                        AvatarStack(names: inviteeInitials, maxVisible: 5)
                     }
                     .padding(.horizontal, 14)
                     .frame(height: 66)
@@ -1564,6 +1655,21 @@ private struct CalendarHeader: View {
             headerTitle
 
             Spacer()
+
+            Button {
+                print("Open my profile")
+            } label: {
+                ProfileAvatar(
+                    name: "나",
+                    fallback: "나",
+                    size: 34,
+                    tint: Color(uiColor: .systemIndigo),
+                    borderColor: Color(uiColor: .separator).opacity(0.25),
+                    borderWidth: 0.8
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("내 프로필")
         }
         .padding(.horizontal, LayoutMetrics.horizontalPadding)
         .padding(.top, 12)
@@ -1673,7 +1779,7 @@ private struct MeetingContextBar: View {
 
                 Spacer(minLength: 8)
 
-                AvatarStack(names: meeting.memberInitials.prefix(4).map { $0 })
+                AvatarStack(names: meeting.memberInitials, maxVisible: 4)
 
                 Text("\(meeting.respondedCount)/\(meeting.memberCount)")
                     .font(.system(size: 13, weight: .semibold))
@@ -2090,6 +2196,8 @@ private struct CreateMeetingSheet: View {
     @State private var scheduleMonth: Date
     @State private var availabilityStartMinutes = 9 * 60
     @State private var availabilityEndMinutes = 18 * 60
+    @State private var excludedTimeRule: ExcludedTimeRule = .lunch
+    @State private var isCustomExcludedTimePresented = false
     @State private var members: [MeetingMemberDraft] = []
     @State private var currentStep: CreateMeetingStep = .schedule
     @State private var hasVisitedInfoStep = false
@@ -2208,6 +2316,20 @@ private struct CreateMeetingSheet: View {
             .disabled(newSectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         } message: {
             Text("회의를 묶을 캘린더를 추가합니다.")
+        }
+        .sheet(isPresented: $isCustomExcludedTimePresented) {
+            CustomExcludedTimeSheet(
+                initialRule: excludedTimeRule.isCustom ? excludedTimeRule : .customDefault,
+                onCancel: {
+                    isCustomExcludedTimePresented = false
+                },
+                onSave: { rule in
+                    excludedTimeRule = rule
+                    isCustomExcludedTimePresented = false
+                }
+            )
+            .presentationDetents([.height(360)])
+            .presentationDragIndicator(.visible)
         }
     }
 
@@ -2429,6 +2551,12 @@ private struct CreateMeetingSheet: View {
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(.primary)
                 }
+
+                Divider()
+
+                scheduleSettingRow(title: "제외 시간", systemImage: "minus.circle") {
+                    excludedTimeMenu
+                }
             }
             .padding(.horizontal, CreateMeetingLayout.cardContentPadding)
             .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: CreateMeetingLayout.cardCornerRadius, style: .continuous))
@@ -2466,7 +2594,8 @@ private struct CreateMeetingSheet: View {
         [
             candidateRangeText,
             availabilityWindowText,
-            meetingDurationText
+            meetingDurationText,
+            excludedTimeText
         ]
     }
 
@@ -2566,6 +2695,10 @@ private struct CreateMeetingSheet: View {
         "1시간"
     }
 
+    private var excludedTimeText: String {
+        excludedTimeRule.summaryText
+    }
+
     private var candidateDayCount: Int {
         candidateDateRows.count
     }
@@ -2615,6 +2748,39 @@ private struct CreateMeetingSheet: View {
                 .font(.system(size: 16, weight: .semibold))
                 .monospacedDigit()
                 .foregroundStyle(Color(uiColor: .systemBlue))
+                .contentShape(Rectangle())
+        }
+        .menuOrder(.fixed)
+    }
+
+    private var excludedTimeMenu: some View {
+        Menu {
+            ForEach(ExcludedTimePreset.allCases) { preset in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        excludedTimeRule = preset.rule
+                    }
+                } label: {
+                    if preset.rule == excludedTimeRule {
+                        Label(preset.menuTitle, systemImage: "checkmark")
+                    } else {
+                        Text(preset.menuTitle)
+                    }
+                }
+            }
+
+            Divider()
+
+            Button {
+                isCustomExcludedTimePresented = true
+            } label: {
+                Label("직접 추가...", systemImage: "plus")
+            }
+        } label: {
+            Text(excludedTimeRule.rowText)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Color(uiColor: .systemBlue))
+                .lineLimit(1)
                 .contentShape(Rectangle())
         }
         .menuOrder(.fixed)
@@ -2784,6 +2950,8 @@ private struct CreateMeetingSheet: View {
             endDate: endDate,
             availabilityWindowText: availabilityWindowText,
             durationText: meetingDurationText,
+            excludedTimeText: excludedTimeText,
+            excludedTimeRule: excludedTimeRule,
             members: sanitizedMembers
         )
 
@@ -3936,7 +4104,7 @@ private struct ReviewInviteeListCard: View {
 
                 Spacer()
 
-                AvatarStack(names: members.prefix(5).map(\.name))
+                AvatarStack(names: members.map(\.name), maxVisible: 5)
             }
 
             HStack(spacing: 8) {
@@ -5541,6 +5709,146 @@ private struct LabeledTextField: View {
     }
 }
 
+private struct CustomExcludedTimeSheet: View {
+    let initialRule: ExcludedTimeRule
+    let onCancel: () -> Void
+    let onSave: (ExcludedTimeRule) -> Void
+
+    @State private var title: String
+    @State private var startHour: Int
+    @State private var endHour: Int
+
+    init(
+        initialRule: ExcludedTimeRule,
+        onCancel: @escaping () -> Void,
+        onSave: @escaping (ExcludedTimeRule) -> Void
+    ) {
+        self.initialRule = initialRule
+        self.onCancel = onCancel
+        self.onSave = onSave
+
+        _title = State(initialValue: initialRule.title)
+        _startHour = State(initialValue: initialRule.startHour)
+        _endHour = State(initialValue: initialRule.endHour)
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    HStack(spacing: 12) {
+                        Text("이름")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 54, alignment: .leading)
+
+                        TextField("제외 시간", text: $title)
+                            .font(.system(size: 16, weight: .semibold))
+                            .textContentType(.none)
+                            .autocorrectionDisabled(true)
+                    }
+                    .frame(height: 44)
+
+                    excludedTimeRow(title: "시작", selectedHour: startHour, options: startHourOptions) { hour in
+                        startHour = hour
+
+                        if endHour <= hour {
+                            endHour = min(hour + 1, 18)
+                        }
+                    }
+
+                    excludedTimeRow(title: "종료", selectedHour: endHour, options: endHourOptions) { hour in
+                        endHour = max(hour, startHour + 1)
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Color(uiColor: .systemGroupedBackground))
+            .navigationTitle("제외 시간 추가")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("취소", action: onCancel)
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("저장") {
+                        onSave(
+                            ExcludedTimeRule(
+                                id: "custom-\(trimmedTitle)-\(startHour)-\(endHour)",
+                                title: trimmedTitle,
+                                startHour: startHour,
+                                endHour: endHour,
+                                isEnabled: true,
+                                isCustom: true
+                            )
+                        )
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(!canSave)
+                }
+            }
+        }
+    }
+
+    private func excludedTimeRow(
+        title: String,
+        selectedHour: Int,
+        options: [Int],
+        onSelect: @escaping (Int) -> Void
+    ) -> some View {
+        HStack(spacing: 12) {
+            Text(title)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 54, alignment: .leading)
+
+            Spacer(minLength: 12)
+
+            Menu {
+                ForEach(options, id: \.self) { hour in
+                    Button {
+                        onSelect(hour)
+                    } label: {
+                        if hour == selectedHour {
+                            Label(timeText(for: hour), systemImage: "checkmark")
+                        } else {
+                            Text(timeText(for: hour))
+                        }
+                    }
+                }
+            } label: {
+                Text(timeText(for: selectedHour))
+                    .font(.system(size: 16, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(Color(uiColor: .systemBlue))
+            }
+            .menuOrder(.fixed)
+        }
+        .frame(height: 44)
+    }
+
+    private var trimmedTitle: String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canSave: Bool {
+        !trimmedTitle.isEmpty && endHour > startHour
+    }
+
+    private var startHourOptions: [Int] {
+        Array(9..<18)
+    }
+
+    private var endHourOptions: [Int] {
+        Array((startHour + 1)...18)
+    }
+
+    private func timeText(for hour: Int) -> String {
+        String(format: "%02d:00", hour)
+    }
+}
+
 private struct MeetingDraft {
     let title: String
     let detail: String
@@ -5551,7 +5859,89 @@ private struct MeetingDraft {
     let endDate: Date
     let availabilityWindowText: String
     let durationText: String
+    let excludedTimeText: String
+    let excludedTimeRule: ExcludedTimeRule
     let members: [MeetingMemberDraft]
+}
+
+private struct ExcludedTimeRule: Equatable {
+    let id: String
+    let title: String
+    let startHour: Int
+    let endHour: Int
+    let isEnabled: Bool
+    let isCustom: Bool
+
+    static let none = ExcludedTimeRule(id: "none", title: "없음", startHour: 0, endHour: 0, isEnabled: false, isCustom: false)
+    static let breakfast = ExcludedTimeRule(id: "breakfast", title: "아침", startHour: 7, endHour: 9, isEnabled: true, isCustom: false)
+    static let lunch = ExcludedTimeRule(id: "lunch", title: "점심시간", startHour: 12, endHour: 13, isEnabled: true, isCustom: false)
+    static let dinner = ExcludedTimeRule(id: "dinner", title: "저녁시간", startHour: 18, endHour: 19, isEnabled: true, isCustom: false)
+    static let customDefault = ExcludedTimeRule(id: "custom", title: "집중 시간", startHour: 15, endHour: 16, isEnabled: true, isCustom: true)
+
+    var rowText: String {
+        isEnabled ? title : "없음"
+    }
+
+    var summaryText: String {
+        isEnabled ? "\(title) 제외" : "제외 없음"
+    }
+
+    var menuTitle: String {
+        guard isEnabled else {
+            return "없음"
+        }
+
+        return "\(title) \(timeText(for: startHour))-\(timeText(for: endHour))"
+    }
+
+    var blockTitle: String {
+        isEnabled ? "\(title) 제외" : ""
+    }
+
+    func excludes(hour: Int, date: Date, calendar: Calendar) -> Bool {
+        guard isEnabled, !isWeekend(date, calendar: calendar) else {
+            return false
+        }
+
+        return (startHour..<endHour).contains(hour)
+    }
+
+    private func timeText(for hour: Int) -> String {
+        String(format: "%02d:00", hour)
+    }
+
+    private func isWeekend(_ date: Date, calendar: Calendar) -> Bool {
+        let weekday = calendar.component(.weekday, from: date)
+        return weekday == 1 || weekday == 7
+    }
+}
+
+private enum ExcludedTimePreset: String, CaseIterable, Identifiable {
+    case none
+    case breakfast
+    case lunch
+    case dinner
+
+    var id: String {
+        rawValue
+    }
+
+    var menuTitle: String {
+        rule.menuTitle
+    }
+
+    var rule: ExcludedTimeRule {
+        switch self {
+        case .none:
+            return .none
+        case .breakfast:
+            return .breakfast
+        case .lunch:
+            return .lunch
+        case .dinner:
+            return .dinner
+        }
+    }
 }
 
 private enum MeetingMode: String, CaseIterable, Identifiable {
@@ -5845,7 +6235,7 @@ private struct MeetingRowCard: View {
                 Spacer(minLength: 8)
 
                 VStack(alignment: .trailing, spacing: 6) {
-                    AvatarStack(names: meeting.memberInitials.prefix(3).map { $0 })
+                    AvatarStack(names: meeting.memberInitials, maxVisible: 3)
 
                     Text("\(meeting.respondedCount)/\(meeting.memberCount)")
                         .font(.system(size: 12, weight: .semibold))
@@ -6016,7 +6406,7 @@ private struct CompactMeetingCard: View {
                 .foregroundStyle(.secondary)
 
             HStack {
-                AvatarStack(names: meeting.memberInitials.prefix(3).map { $0 })
+                AvatarStack(names: meeting.memberInitials, maxVisible: 3)
 
                 Spacer()
 
@@ -6200,10 +6590,19 @@ private struct ProfileAvatar: View {
 
 private struct AvatarStack: View {
     let names: [String]
+    var maxVisible: Int = 5
+
+    private var visibleNames: [String] {
+        Array(names.prefix(max(maxVisible, 0)))
+    }
+
+    private var overflowCount: Int {
+        max(names.count - visibleNames.count, 0)
+    }
 
     var body: some View {
         HStack(spacing: -8) {
-            ForEach(Array(names.enumerated()), id: \.offset) { index, name in
+            ForEach(Array(visibleNames.enumerated()), id: \.offset) { index, name in
                 ProfileAvatar(
                     name: name,
                     fallback: ProfileAsset.fallbackText(for: name),
@@ -6212,6 +6611,18 @@ private struct AvatarStack: View {
                     borderColor: Color(uiColor: .secondarySystemBackground),
                     borderWidth: 2
                 )
+            }
+
+            if overflowCount > 0 {
+                Text("+\(overflowCount)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
+                    .background(Color(uiColor: .tertiarySystemFill), in: Circle())
+                    .overlay {
+                        Circle()
+                            .stroke(Color(uiColor: .secondarySystemBackground), lineWidth: 2)
+                    }
             }
         }
         .frame(height: 28)
@@ -6232,6 +6643,7 @@ private struct HomeMeeting: Identifiable {
     let subtitle: String
     let dateRange: String
     let timeRange: String
+    let excludedTimeRule: ExcludedTimeRule
     let memberCount: Int
     let respondedCount: Int
     let status: MeetingStatus
@@ -6256,6 +6668,30 @@ private struct HomeMeeting: Identifiable {
     }
 
     func sharedWithMembers() -> HomeMeeting {
+        let normalizedMembers = Self.prototypeSixMembers(from: memberInitials)
+
+        return HomeMeeting(
+            id: id,
+            title: title,
+            sectionName: sectionName,
+            subtitle: subtitle,
+            dateRange: dateRange,
+            timeRange: timeRange,
+            excludedTimeRule: excludedTimeRule,
+            memberCount: normalizedMembers.count,
+            respondedCount: normalizedMembers.count,
+            status: .collecting,
+            stage: .collectingResponses,
+            memberInitials: normalizedMembers,
+            focusDate: focusDate,
+            candidateStartDate: candidateStartDate,
+            candidateEndDate: candidateEndDate,
+            confirmedDay: confirmedDay,
+            confirmedWeekday: confirmedWeekday
+        )
+    }
+
+    func readyForComparison() -> HomeMeeting {
         HomeMeeting(
             id: id,
             title: title,
@@ -6263,10 +6699,11 @@ private struct HomeMeeting: Identifiable {
             subtitle: subtitle,
             dateRange: dateRange,
             timeRange: timeRange,
+            excludedTimeRule: excludedTimeRule,
             memberCount: memberCount,
-            respondedCount: max(respondedCount, 1),
-            status: .collecting,
-            stage: .collectingResponses,
+            respondedCount: memberCount,
+            status: .ready,
+            stage: .bracketReview,
             memberInitials: memberInitials,
             focusDate: focusDate,
             candidateStartDate: candidateStartDate,
@@ -6284,6 +6721,7 @@ private struct HomeMeeting: Identifiable {
             subtitle: "제품 방향성, IA, 화면 우선순위",
             dateRange: "7월 15일 - 18일",
             timeRange: "10:00 - 17:00",
+            excludedTimeRule: .lunch,
             memberCount: 5,
             respondedCount: 3,
             status: .collecting,
@@ -6302,6 +6740,7 @@ private struct HomeMeeting: Identifiable {
             subtitle: "MVP 범위 점검",
             dateRange: "7월 16일 - 17일",
             timeRange: "14:00 - 16:00",
+            excludedTimeRule: .lunch,
             memberCount: 4,
             respondedCount: 4,
             status: .ready,
@@ -6320,6 +6759,7 @@ private struct HomeMeeting: Identifiable {
             subtitle: "인터뷰 결과 공유",
             dateRange: "7월 21일 - 22일",
             timeRange: "09:00 - 12:00",
+            excludedTimeRule: .lunch,
             memberCount: 6,
             respondedCount: 2,
             status: .waiting,
@@ -6338,6 +6778,7 @@ private struct HomeMeeting: Identifiable {
             subtitle: "가이드라인 확정",
             dateRange: "7월 14일",
             timeRange: "11:00 - 12:00",
+            excludedTimeRule: .lunch,
             memberCount: 3,
             respondedCount: 3,
             status: .confirmed,
@@ -6350,6 +6791,23 @@ private struct HomeMeeting: Identifiable {
             confirmedWeekday: "화"
         )
     ]
+
+    private static func prototypeSixMembers(from names: [String]) -> [String] {
+        let fallbackNames = ["나", "김민준", "이서연", "오유진", "송승아", "박도윤"]
+        var normalizedNames = names
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        if !normalizedNames.contains("나") {
+            normalizedNames.insert("나", at: 0)
+        }
+
+        for name in fallbackNames where normalizedNames.count < 6 && !normalizedNames.contains(name) {
+            normalizedNames.append(name)
+        }
+
+        return Array(normalizedNames.prefix(6))
+    }
 
     private static func makeDate(year: Int, month: Int, day: Int) -> Date {
         var calendar = Calendar.current
@@ -6929,7 +7387,9 @@ private struct ScheduleGridView: View {
     let events: [ScheduleEvent]
     let availabilityEntries: [AvailabilitySlot: AvailabilityEntry]
     let teamResponseSummaries: [AvailabilitySlot: TeamResponseSummary]
+    let excludedTimeRule: ExcludedTimeRule
     let isResponseMode: Bool
+    let allowsAvailabilityEditing: Bool
     let selectedAvailabilityMode: AvailabilityMode
     let rowHeight: CGFloat
     let bottomContentInset: CGFloat
@@ -6944,6 +7404,8 @@ private struct ScheduleGridView: View {
     @State private var dragPreviewSlots: Set<AvailabilitySlot> = []
     @State private var selectedAvailabilityBlock: AvailabilityBlockDetail?
     @State private var selectedTeamResponse: TeamResponseDetail?
+    @State private var responseRevealCounts: [String: Int] = [:]
+    @State private var responseRevealPlayedSignature = ""
 
     private let hours = Array(9..<18)
     private let workStartHour = 9
@@ -6981,6 +7443,7 @@ private struct ScheduleGridView: View {
 
                         ZStack(alignment: .topLeading) {
                             gridBackground(layout: gridLayout)
+                            excludedTimeLayer(layout: gridLayout)
                             if isResponseMode {
                                 teamResponseLayer(layout: gridLayout)
                             } else {
@@ -7004,6 +7467,15 @@ private struct ScheduleGridView: View {
         .onReceive(clock) { date in
             currentTime = date
         }
+        .onAppear {
+            prepareTeamResponseRevealIfNeeded()
+        }
+        .onChange(of: isResponseMode) { _, _ in
+            prepareTeamResponseRevealIfNeeded()
+        }
+        .onChange(of: responseRevealSignature) { _, _ in
+            prepareTeamResponseRevealIfNeeded()
+        }
         .sheet(item: $selectedAvailabilityBlock) { detail in
             AvailabilityBlockDetailSheet(
                 detail: detail,
@@ -7015,7 +7487,7 @@ private struct ScheduleGridView: View {
                     }
                 }
             )
-                .presentationDetents([.height(detail.reason.isEmpty ? 260 : 320), .medium])
+                .presentationDetents(availabilityDetailDetents(for: detail))
                 .presentationDragIndicator(.visible)
         }
         .sheet(item: $selectedTeamResponse) { detail in
@@ -7023,6 +7495,20 @@ private struct ScheduleGridView: View {
                 .presentationDetents([.height(430), .medium, .large])
                 .presentationDragIndicator(.visible)
         }
+    }
+
+    private func availabilityDetailDetents(for detail: AvailabilityBlockDetail) -> Set<PresentationDetent> {
+        let reason = detail.reason.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !reason.isEmpty else {
+            return [.height(292)]
+        }
+
+        if reason.count > 80 {
+            return [.height(410), .large]
+        }
+
+        return [.height(370)]
     }
 
     private var timeAxis: some View {
@@ -7100,18 +7586,65 @@ private struct ScheduleGridView: View {
             ForEach(Array(visibleDates.enumerated()), id: \.element.timeIntervalSinceReferenceDate) { dayIndex, date in
                 ForEach(workStartHour..<workEndHour, id: \.self) { hour in
                     let cellHeight = rowHeight - 3
+                    let slot = AvailabilitySlot(date: calendar.startOfDay(for: date), hour: hour)
 
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isWeekend(date) ? Color(uiColor: .systemGray6).opacity(0.54) : Color(uiColor: .systemGray6).opacity(0.72))
-                        .frame(width: layout.columnWidth, height: cellHeight)
-                        .position(
-                            x: layout.xCenter(for: dayIndex),
-                            y: yCenter(for: hour, height: cellHeight)
-                        )
+                    if !isExcludedSlot(slot) {
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(isWeekend(date) ? Color(uiColor: .systemGray6).opacity(0.54) : Color(uiColor: .systemGray6).opacity(0.72))
+                            .frame(width: layout.columnWidth, height: cellHeight)
+                            .position(
+                                x: layout.xCenter(for: dayIndex),
+                                y: yCenter(for: hour, height: cellHeight)
+                            )
+                    }
                 }
             }
         }
         .frame(width: layout.width, height: gridHeight, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private func excludedTimeLayer(layout: ScheduleGridLayout) -> some View {
+        let excludedHours = (workStartHour..<workEndHour).filter { hour in
+            visibleDates.contains { date in
+                excludedTimeRule.excludes(hour: hour, date: date, calendar: calendar)
+            }
+        }
+
+        if !excludedHours.isEmpty {
+            ZStack(alignment: .topLeading) {
+                ForEach(excludedHours, id: \.self) { hour in
+                    ForEach(excludedDateGroups(for: hour), id: \.self) { group in
+                        let firstIndex = group.lowerBound
+                        let lastIndex = group.upperBound
+                        let xStart = layout.xOffset(for: firstIndex)
+                        let width = layout.xOffset(for: lastIndex) + layout.columnWidth - xStart
+                        let height = rowHeight - 3
+
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(Color(uiColor: .systemGray6).opacity(0.42))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .stroke(Color(uiColor: .separator).opacity(0.06), lineWidth: 0.7)
+                            }
+                            .overlay {
+                                if width > 96 {
+                                    Text(excludedTimeRule.blockTitle)
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundStyle(Color(uiColor: .tertiaryLabel).opacity(0.78))
+                                        .lineLimit(1)
+                                }
+                            }
+                            .frame(width: width, height: height)
+                            .position(
+                                x: xStart + width / 2,
+                                y: yCenter(for: hour, height: height)
+                            )
+                    }
+                }
+            }
+            .frame(width: layout.width, height: gridHeight, alignment: .topLeading)
+        }
     }
 
     private func availabilityLayer(layout: ScheduleGridLayout) -> some View {
@@ -7165,50 +7698,34 @@ private struct ScheduleGridView: View {
         ZStack(alignment: .topLeading) {
             ForEach(teamResponseBlocks) { block in
                 let height = CGFloat(block.endHour - block.startHour) * rowHeight - 3
+                let totalCount = max(block.summary.totalCount, 1)
+                let revealedCount = min(responseRevealCounts[block.id] ?? totalCount, totalCount)
+                let isComplete = revealedCount >= totalCount
 
-                ZStack {
-                    Text("\(block.summary.availableCount)/\(block.summary.totalCount)")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(block.summary.tint)
-                        .monospacedDigit()
-
-                    if block.summary.hasConcern {
-                        HStack(spacing: 3) {
-                            if block.summary.burdenCount > 0 {
-                                Circle()
-                                    .fill(Color(uiColor: .systemOrange))
-                                    .frame(width: 5, height: 5)
-                            }
-
-                            if block.summary.unavailableCount > 0 {
-                                Circle()
-                                    .fill(Color(uiColor: .systemRed))
-                                    .frame(width: 5, height: 5)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                        .padding(.top, 6)
-                        .padding(.trailing, 6)
-                    }
-                }
+                Text("응답 \(revealedCount)/\(totalCount)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(isComplete ? Color(uiColor: .secondaryLabel).opacity(0.76) : Color(uiColor: .tertiaryLabel))
+                    .contentTransition(.numericText())
                 .frame(width: layout.columnWidth, height: height)
-                .background(block.summary.fill, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .background(
+                    Color(uiColor: .tertiarySystemFill).opacity(isComplete ? 0.56 : 0.32),
+                    in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+                )
                 .overlay {
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .stroke(block.summary.stroke, lineWidth: 1)
-                }
-                .overlay(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 2, style: .continuous)
-                        .fill(block.summary.tint)
-                        .frame(width: 3)
-                        .padding(.vertical, 6)
-                        .padding(.leading, 5)
+                        .stroke(Color(uiColor: .separator).opacity(isComplete ? 0.18 : 0.09), lineWidth: 0.8)
                 }
                 .overlay {
                     responseHourTicks(for: block, height: height, width: layout.columnWidth)
+                        .opacity(isComplete ? 1 : 0.45)
                 }
                 .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                 .onTapGesture {
+                    guard isComplete else {
+                        return
+                    }
+
                     selectedTeamResponse = TeamResponseDetail(
                         date: block.date,
                         startHour: block.startHour,
@@ -7220,10 +7737,80 @@ private struct ScheduleGridView: View {
                     x: layout.xCenter(for: block.dayIndex),
                     y: yCenter(for: block.startHour, height: height)
                 )
+                .animation(.easeInOut(duration: 0.32), value: revealedCount)
             }
         }
         .frame(width: layout.width, height: gridHeight, alignment: .topLeading)
         .animation(blockAnimation, value: teamResponseBlocks)
+    }
+
+    private var responseRevealSignature: String {
+        guard isResponseMode else {
+            return "idle"
+        }
+
+        return teamResponseBlocks.map(\.id).joined(separator: "|")
+    }
+
+    private func prepareTeamResponseRevealIfNeeded() {
+        guard isResponseMode else {
+            responseRevealCounts = [:]
+            responseRevealPlayedSignature = ""
+            return
+        }
+
+        let blocks = teamResponseBlocks
+        let signature = responseRevealSignature
+
+        guard !blocks.isEmpty, responseRevealPlayedSignature != signature else {
+            return
+        }
+
+        responseRevealPlayedSignature = signature
+        responseRevealCounts = Dictionary(
+            uniqueKeysWithValues: blocks.map { block in
+                (block.id, min(1, max(block.summary.totalCount, 1)))
+            }
+        )
+
+        for (blockIndex, block) in blocks.enumerated() {
+            let totalCount = max(block.summary.totalCount, 1)
+            let sequence = responseRevealSequence(for: totalCount)
+            let baseDelay = responseRevealBaseDelay(for: block, index: blockIndex)
+
+            for (stepIndex, count) in sequence.enumerated() {
+                let delay = baseDelay + Double(stepIndex) * 0.34
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    guard isResponseMode, responseRevealPlayedSignature == signature else {
+                        return
+                    }
+
+                    withAnimation(.easeInOut(duration: 0.32)) {
+                        responseRevealCounts[block.id] = count
+                    }
+                }
+            }
+        }
+    }
+
+    private func responseRevealBaseDelay(for block: TeamResponseBlock, index: Int) -> Double {
+        let mixedValue = abs((block.dayIndex * 37 + block.startHour * 17 + block.endHour * 11 + index * 13) % 19)
+        return Double(mixedValue) * 0.055
+    }
+
+    private func responseRevealSequence(for totalCount: Int) -> [Int] {
+        var values: [Int] = []
+
+        for count in [1, 2, 4, totalCount] {
+            let normalizedCount = min(max(count, 1), totalCount)
+
+            if values.last != normalizedCount {
+                values.append(normalizedCount)
+            }
+        }
+
+        return values
     }
 
     @ViewBuilder
@@ -7280,8 +7867,8 @@ private struct ScheduleGridView: View {
 
     private func slotDragGesture(layout: ScheduleGridLayout) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .local)
-            .onChanged { value in
-                guard !isResponseMode else {
+                .onChanged { value in
+                guard !isResponseMode, allowsAvailabilityEditing else {
                     return
                 }
 
@@ -7306,7 +7893,7 @@ private struct ScheduleGridView: View {
                 }
             }
             .onEnded { value in
-                guard !isResponseMode else {
+                guard !isResponseMode, allowsAvailabilityEditing else {
                     return
                 }
 
@@ -7356,7 +7943,13 @@ private struct ScheduleGridView: View {
             return nil
         }
 
-        return AvailabilitySlot(date: calendar.startOfDay(for: visibleDates[dayIndex]), hour: hour)
+        let slot = AvailabilitySlot(date: calendar.startOfDay(for: visibleDates[dayIndex]), hour: hour)
+
+        guard !isExcludedSlot(slot) else {
+            return nil
+        }
+
+        return slot
     }
 
     private func slots(from startSlot: AvailabilitySlot, to endSlot: AvailabilitySlot) -> Set<AvailabilitySlot> {
@@ -7375,11 +7968,51 @@ private struct ScheduleGridView: View {
             let date = calendar.startOfDay(for: visibleDates[dayIndex])
 
             for hour in hourRange where hour >= workStartHour && hour < workEndHour {
-                slots.insert(AvailabilitySlot(date: date, hour: hour))
+                let slot = AvailabilitySlot(date: date, hour: hour)
+
+                if !isExcludedSlot(slot) {
+                    slots.insert(slot)
+                }
             }
         }
 
         return slots
+    }
+
+    private func excludedDateGroups(for hour: Int) -> [ClosedRange<Int>] {
+        var groups: [ClosedRange<Int>] = []
+        var groupStart: Int?
+        var previousIndex: Int?
+
+        for (index, date) in visibleDates.enumerated() {
+            let slot = AvailabilitySlot(date: calendar.startOfDay(for: date), hour: hour)
+
+            guard isExcludedSlot(slot) else {
+                if let start = groupStart, let previous = previousIndex {
+                    groups.append(start...previous)
+                }
+
+                groupStart = nil
+                previousIndex = nil
+                continue
+            }
+
+            if groupStart == nil {
+                groupStart = index
+            }
+
+            previousIndex = index
+        }
+
+        if let start = groupStart, let previous = previousIndex {
+            groups.append(start...previous)
+        }
+
+        return groups
+    }
+
+    private func isExcludedSlot(_ slot: AvailabilitySlot) -> Bool {
+        excludedTimeRule.excludes(hour: slot.hour, date: slot.date, calendar: calendar)
     }
 
     private func shortWeekdayText(for date: Date) -> String {
@@ -7563,6 +8196,10 @@ private struct ScheduleGridView: View {
     }
 
     private func effectiveAvailabilityEntry(for slot: AvailabilitySlot) -> AvailabilityEntry? {
+        guard !isExcludedSlot(slot) else {
+            return nil
+        }
+
         if dragPreviewSlots.contains(slot) {
             if isClearingAvailablePreview {
                 return nil
@@ -7725,7 +8362,7 @@ private struct AvailabilityBlockDetailSheet: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(detail.mode.title)
                         .font(.system(size: 30, weight: .semibold))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(detail.mode.tint)
 
                     HStack(spacing: 8) {
                         Image(systemName: "calendar")
@@ -7768,13 +8405,16 @@ private struct AvailabilityBlockDetailSheet: View {
                             .padding(14)
                             .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                     }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
                 }
 
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, LayoutMetrics.horizontalPadding)
             .padding(.top, 18)
-            .background(Color(uiColor: .systemBackground))
+            .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("시간 상세")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -7816,68 +8456,60 @@ private struct TeamResponseDetailSheet: View {
     let calendar: Calendar
 
     @Environment(\.dismiss) private var dismiss
+    @State private var isAvailableListExpanded = false
 
     var body: some View {
         NavigationStack {
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 14) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("팀원 응답")
-                            .font(.system(size: 30, weight: .semibold))
-                            .foregroundStyle(.primary)
+                VStack(alignment: .leading, spacing: 16) {
+                    responseSummaryCard
 
-                        HStack(spacing: 8) {
-                            Image(systemName: "calendar")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(detail.summary.tint)
+                    if detail.summary.hasConcern {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("확인 필요")
+                                .font(.system(size: 17, weight: .semibold))
+                                .foregroundStyle(.primary)
 
-                            Text("\(dateText) · \(timeText)")
+                            ForEach(detail.summary.unavailableMembers) { member in
+                                responseIssueCard(
+                                    name: member.name,
+                                    status: "불가",
+                                    reason: member.reason,
+                                    tint: Color(uiColor: .systemRed)
+                                )
+                            }
+
+                            ForEach(detail.summary.burdenMembers) { member in
+                                responseIssueCard(
+                                    name: member.name,
+                                    status: "부담",
+                                    reason: member.reason,
+                                    tint: Color(uiColor: .systemOrange)
+                                )
+                            }
+                        }
+                    } else {
+                        HStack(spacing: 10) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(Color(uiColor: .systemGreen))
+
+                            Text("모든 참석자가 가능한 시간입니다")
                                 .font(.system(size: 16, weight: .semibold))
                                 .foregroundStyle(.primary)
                         }
-                    }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(detail.summary.fill, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 22, style: .continuous)
-                            .stroke(detail.summary.stroke, lineWidth: 1)
+                        .padding(16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                     }
 
-                    VStack(spacing: 10) {
-                        ForEach(detail.summary.availableNames, id: \.self) { name in
-                            responseMemberCard(
-                                name: name,
-                                status: "가능",
-                                reason: "참여할 수 있어요",
-                                tint: Color(uiColor: .systemGreen)
-                            )
-                        }
-
-                        ForEach(detail.summary.burdenMembers) { member in
-                            responseMemberCard(
-                                name: member.name,
-                                status: "부담",
-                                reason: member.reason,
-                                tint: Color(uiColor: .systemOrange)
-                            )
-                        }
-
-                        ForEach(detail.summary.unavailableMembers) { member in
-                            responseMemberCard(
-                                name: member.name,
-                                status: "불가",
-                                reason: member.reason,
-                                tint: Color(uiColor: .systemRed)
-                            )
-                        }
-                    }
+                    availableSummaryCard
                 }
                 .padding(.horizontal, LayoutMetrics.horizontalPadding)
                 .padding(.top, 18)
                 .padding(.bottom, 18)
             }
-            .background(Color(uiColor: .systemBackground))
+            .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("응답 상세")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -7891,10 +8523,165 @@ private struct TeamResponseDetailSheet: View {
         }
     }
 
-    private func responseMemberCard(name: String, status: String, reason: String, tint: Color) -> some View {
+    private var responseSummaryCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("\(dateText) · \(timeText)")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("\(detail.summary.availableCount)/\(detail.summary.totalCount)")
+                        .font(.system(size: 44, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .monospacedDigit()
+
+                    Text("가능")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(spacing: 7) {
+                responseCountPill(
+                    title: "가능",
+                    count: detail.summary.availableCount,
+                    tint: Color(uiColor: .systemGreen)
+                )
+
+                responseCountPill(
+                    title: "부담",
+                    count: detail.summary.burdenCount,
+                    tint: Color(uiColor: .systemOrange)
+                )
+
+                responseCountPill(
+                    title: "불가",
+                    count: detail.summary.unavailableCount,
+                    tint: Color(uiColor: .systemRed)
+                )
+            }
+
+            Text(summaryMessage)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+
+    private var availableSummaryCard: some View {
+        VStack(alignment: .leading, spacing: isAvailableListExpanded ? 12 : 0) {
+            Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.94, blendDuration: 0.04)) {
+                    isAvailableListExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("가능한 참석자")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.primary)
+
+                        Text(availableSummaryText)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    AvatarStack(names: detail.summary.availableNames, maxVisible: 5)
+
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isAvailableListExpanded ? 180 : 0))
+                        .animation(.spring(response: 0.3, dampingFraction: 0.94), value: isAvailableListExpanded)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            availableParticipantList
+                .frame(height: isAvailableListExpanded ? availableParticipantListHeight : 0, alignment: .top)
+                .opacity(isAvailableListExpanded ? 1 : 0)
+                .clipped()
+                .allowsHitTesting(isAvailableListExpanded)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .animation(.spring(response: 0.3, dampingFraction: 0.94, blendDuration: 0.04), value: isAvailableListExpanded)
+    }
+
+    private var availableParticipantList: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(detail.summary.availableNames.enumerated()), id: \.offset) { index, name in
+                availableParticipantRow(name: name)
+
+                if index < detail.summary.availableNames.count - 1 {
+                    Divider()
+                        .padding(.leading, 48)
+                }
+            }
+        }
+    }
+
+    private var availableParticipantListHeight: CGFloat {
+        let rowCount = detail.summary.availableNames.count
+        let dividerCount = max(rowCount - 1, 0)
+
+        return CGFloat(rowCount) * 50 + CGFloat(dividerCount)
+    }
+
+    private func availableParticipantRow(name: String) -> some View {
+        HStack(spacing: 12) {
+            ProfileAvatar(
+                name: name,
+                fallback: initial(for: name),
+                size: 36,
+                tint: Color(uiColor: .systemGreen)
+            )
+
+            Text(name)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.primary)
+
+            Spacer(minLength: 0)
+
+            Text("가능")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color(uiColor: .systemGreen))
+                .padding(.horizontal, 9)
+                .frame(height: 24)
+                .background(Color(uiColor: .systemGreen).opacity(0.12), in: Capsule())
+        }
+        .frame(height: 50)
+    }
+
+    private func responseCountPill(title: String, count: Int, tint: Color) -> some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(tint)
+                .frame(width: 6, height: 6)
+
+            Text("\(title) \(count)")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(tint)
+                .monospacedDigit()
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .background(tint.opacity(count == 0 ? 0.06 : 0.12), in: Capsule())
+    }
+
+    private func responseIssueCard(name: String, status: String, reason: String, tint: Color) -> some View {
         HStack(alignment: .center, spacing: 14) {
             RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                .fill(tint.opacity(0.72))
+                .fill(tint.opacity(0.76))
                 .frame(width: 5)
                 .padding(.vertical, 6)
 
@@ -7915,7 +8702,7 @@ private struct TeamResponseDetailSheet: View {
                     Text(status)
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(tint)
-                        .padding(.horizontal, 8)
+                        .padding(.horizontal, 9)
                         .frame(height: 24)
                         .background(tint.opacity(0.12), in: Capsule())
                 }
@@ -7932,65 +8719,39 @@ private struct TeamResponseDetailSheet: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 13)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private var summaryMessage: String {
+        if detail.summary.unavailableCount > 0 {
+            return "불가 응답이 있어 확정 전 사유를 확인하는 것이 좋습니다."
+        }
+
+        if detail.summary.burdenCount > 0 {
+            return "참석은 가능하지만 부담이 있는 팀원이 있습니다."
+        }
+
+        return "응답 기준으로 가장 안정적인 후보 시간입니다."
+    }
+
+    private var availableSummaryText: String {
+        let names = detail.summary.availableNames
+
+        guard !names.isEmpty else {
+            return "가능한 참석자가 없습니다"
+        }
+
+        let visibleNames = names.prefix(3).joined(separator: ", ")
+
+        if names.count > 3 {
+            return "\(visibleNames) 외 \(names.count - 3)명 가능"
+        }
+
+        return "\(visibleNames) 가능"
     }
 
     private func initial(for name: String) -> String {
         String(name.prefix(1))
-    }
-
-    private func responseRow(title: String, detail: String, tint: Color, isLast: Bool) -> some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .top, spacing: 12) {
-                Text(title)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(tint)
-                    .frame(width: 38, alignment: .leading)
-
-                Text(detail.isEmpty ? "없음" : detail)
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(detail.isEmpty ? .secondary : .primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 14)
-
-            if !isLast {
-                Divider()
-                    .padding(.leading, 64)
-            }
-        }
-    }
-
-    private func responseReasonRows(title: String, members: [TeamResponseReason], tint: Color, isLast: Bool) -> some View {
-        VStack(spacing: 0) {
-            ForEach(Array(members.enumerated()), id: \.element.id) { index, member in
-                HStack(alignment: .top, spacing: 12) {
-                    Text(index == 0 ? title : "")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(tint)
-                        .frame(width: 38, alignment: .leading)
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(member.name)
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(.primary)
-
-                        Text(member.reason)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-
-                if index < members.count - 1 || !isLast {
-                    Divider()
-                        .padding(.leading, 64)
-                }
-            }
-        }
     }
 
     private var dateText: String {
