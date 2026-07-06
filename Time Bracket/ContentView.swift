@@ -1040,7 +1040,7 @@ private struct ShareCalendarSheet: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, LayoutMetrics.horizontalPadding)
-            .padding(.top, 18)
+            .padding(.top, 32)
             .background(Color(uiColor: .systemBackground))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1367,10 +1367,6 @@ private struct AvailabilityReasonSheet: View {
             }
         }
         .frame(height: 80, alignment: .top)
-        .transaction { transaction in
-            transaction.animation = nil
-        }
-        .animation(nil, value: reason)
     }
 
     private func reasonChip(_ suggestion: String) -> some View {
