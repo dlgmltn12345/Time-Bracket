@@ -470,13 +470,13 @@ private struct CalendarScreen: View {
                             )
                         }
                         .frame(height: scheduleHeight)
-                        .scaleEffect(isDerivationTransitionActive ? 1.035 : 1, anchor: .top)
-                        .offset(y: isDerivationTransitionActive ? -34 : 0)
-                        .opacity(isDerivationTransitionActive ? 0.16 : 1)
+                        .scaleEffect(isDerivationTransitionActive ? 1.012 : 1, anchor: .top)
+                        .offset(y: isDerivationTransitionActive ? -18 : 0)
+                        .opacity(isDerivationTransitionActive ? 0 : 1)
                     }
                 }
             }
-            .animation(.spring(response: 0.72, dampingFraction: 0.92, blendDuration: 0.08), value: isDerivationTransitionActive)
+            .animation(.easeInOut(duration: 0.28), value: isDerivationTransitionActive)
 
             Group {
                 if isSharedCalendar {
@@ -512,7 +512,7 @@ private struct CalendarScreen: View {
 
             if isDerivationTransitionActive {
                 CalendarDerivationTransitionOverlay()
-                    .transition(.opacity)
+                    .transition(.opacity.animation(.easeInOut(duration: 0.22)))
                     .zIndex(10)
             }
         }
@@ -563,7 +563,7 @@ private struct CalendarScreen: View {
                 onStart: {
                     let criteria = derivationCriteria
                     isDerivationCriteriaPresented = false
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) {
                         startDerivationTransition(criteria: criteria)
                     }
                 }
@@ -737,7 +737,7 @@ private struct CalendarScreen: View {
             isDerivationTransitionActive = true
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.08) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.82) {
             onCompareResponses(meeting.id, criteria)
         }
     }
@@ -1186,7 +1186,7 @@ private struct DerivationCriteriaSheet: View {
                             .font(.system(size: 28, weight: .semibold))
                             .foregroundStyle(.primary)
 
-                        Text("선택한 기준에 따라 불가 후보를 제외하고, 남은 시간 중 최종 2안을 도출합니다.")
+                        Text("필참자가 모두 가능한 시간을 먼저 남기고, 선택 참석자와 부담 조건을 반영해 최종 2안을 도출합니다.")
                             .font(.system(size: 15, weight: .medium))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1232,7 +1232,7 @@ private struct DerivationCriteriaSheet: View {
                         }
                     }
 
-                    criteriaCard(title: "판단 기준") {
+                    criteriaCard(title: "후보 정렬 기준") {
                         Picker("판단 기준", selection: $criteria.priority) {
                             ForEach(DerivationDecisionPriority.allCases) { priority in
                                 Text(priority.title).tag(priority)
@@ -1240,6 +1240,8 @@ private struct DerivationCriteriaSheet: View {
                         }
                         .pickerStyle(.segmented)
                     }
+
+                    criteriaPolicyCard
 
                     Button(action: onStart) {
                         Text("이 기준으로 도출하기")
@@ -1277,6 +1279,59 @@ private struct DerivationCriteriaSheet: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private var criteriaPolicyCard: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            Text("고정 원칙")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.primary)
+
+            criteriaPolicyRow(
+                title: "필참 불가는 제외",
+                detail: "꼭 참석해야 하는 사람이 불가한 시간은 후보에서 제외합니다.",
+                symbolName: "person.crop.circle.badge.xmark.fill",
+                tint: Color(uiColor: .systemRed)
+            )
+
+            criteriaPolicyRow(
+                title: "선택 불가는 우선순위에 반영",
+                detail: "선택 참석자가 불가한 시간은 제외하지 않고 순위를 낮춥니다.",
+                symbolName: "minus.circle.fill",
+                tint: Color(uiColor: .systemOrange)
+            )
+
+            criteriaPolicyRow(
+                title: "부담 응답은 우선순위에 반영",
+                detail: "참석은 가능하지만 일정/이동/컨디션 부담이 큰 시간은 뒤로 미룹니다.",
+                symbolName: "exclamationmark.triangle.fill",
+                tint: Color(uiColor: .systemOrange)
+            )
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private func criteriaPolicyRow(title: String, detail: String, symbolName: String, tint: Color) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbolName)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 28, height: 28)
+                .background(tint.opacity(0.1), in: Circle())
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                Text(detail)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     private func criteriaToggleRow(
@@ -1396,7 +1451,7 @@ private enum DerivationDecisionPriority: String, CaseIterable, Identifiable {
         case .lowBurden:
             return "부담 최소"
         case .requiredFirst:
-            return "필참 우선"
+            return "필참 안정"
         }
     }
 }
@@ -2378,8 +2433,8 @@ private struct BracketReviewScreen: View {
         static let phaseAvailabilityDelay = 17.9
         static let phaseFinalDelay = 22.4
         static let titleInitialDelay = 0.18
-        static let titleCharacterInterval = 0.068
-        static let titleCharacterAnimation = 0.34
+        static let titleCharacterInterval = 0.058
+        static let titleCharacterAnimation = 0.28
         static let detailDelay = 0.38
         static let detailAnimation = 0.52
         static let blockInitialDelay = 0.7
@@ -2471,7 +2526,7 @@ private struct BracketReviewScreen: View {
         } else if !availableCandidateSlots.isEmpty {
             sourceSlots = availableCandidateSlots
         } else {
-            sourceSlots = criteriaReadySlots
+            sourceSlots = criteriaReadySlots.filter { $0.requiredUnavailableCount == 0 }
         }
 
         return Array(sourceSlots.sorted(by: isBetterDerivationSlot).prefix(2))
@@ -2572,8 +2627,9 @@ private struct BracketReviewScreen: View {
                 .padding(.top, 10)
                 .opacity(isDetailVisible ? 1 : 0)
                 .offset(y: isDetailVisible ? 0 : 8)
-                .animation(.easeOut(duration: 0.32), value: isDetailVisible)
-                .contentTransition(.opacity)
+                .id(phase.onboardingDetail)
+                .transition(.opacity.combined(with: .offset(y: 6)))
+                .animation(.easeInOut(duration: 0.38), value: isDetailVisible)
 
             DerivationPhaseChipRow(
                 chips: phaseChips,
@@ -2670,7 +2726,7 @@ private struct BracketReviewScreen: View {
     }
 
     private func setPhase(_ nextPhase: MeetingDerivationPhase) {
-        withAnimation(.spring(response: 0.58, dampingFraction: 0.9)) {
+        withAnimation(.easeInOut(duration: 0.24)) {
             phase = nextPhase
             visibleTitleCharacterCount = 0
             isDetailVisible = false
@@ -2697,7 +2753,7 @@ private struct BracketReviewScreen: View {
                     return
                 }
 
-                withAnimation(.easeOut(duration: Timing.titleCharacterAnimation)) {
+                withAnimation(.easeInOut(duration: Timing.titleCharacterAnimation)) {
                     visibleTitleCharacterCount = index + 1
                 }
             }
@@ -2819,7 +2875,7 @@ private struct BracketReviewScreen: View {
         case .comparing:
             return [
                 DerivationPhaseChip(title: "필참 불가 제외", symbolName: "person.crop.circle.badge.xmark.fill", color: Color(uiColor: .systemRed)),
-                DerivationPhaseChip(title: "선택 불가 감점", symbolName: "minus.circle.fill", color: Color(uiColor: .systemOrange))
+                DerivationPhaseChip(title: "선택 불가 반영", symbolName: "minus.circle.fill", color: Color(uiColor: .systemOrange))
             ]
         case .burden:
             return [
@@ -2943,9 +2999,9 @@ private enum MeetingDerivationPhase: Int {
         case .preparing:
             return "응답 블럭을 후보로 펼치는 중"
         case .filtering:
-            return "불가 시간이 있는 후보를 제외 중"
+            return "선택 기준을 반영 중"
         case .comparing:
-            return "불가 후보를 제외 중"
+            return "필참 불가 후보를 제외 중"
         case .burden:
             return "부담이 큰 시간을 줄이는 중"
         case .availability:
@@ -2962,7 +3018,7 @@ private enum MeetingDerivationPhase: Int {
         case .filtering:
             return "필참 조건과 불가 응답을 먼저 확인합니다"
         case .comparing:
-            return "모두 참석하기 어려운 시간을 먼저 걷어냅니다"
+            return "필참 불가 후보는 제외하고, 선택 참석자 불가는 우선순위에 반영합니다"
         case .burden:
             return "참석은 가능하지만 부담이 큰 시간은 뒤로 미룹니다"
         case .availability:
@@ -2979,7 +3035,7 @@ private enum MeetingDerivationPhase: Int {
         case .filtering:
             return "선택 기준을 반영할게요"
         case .comparing:
-            return "불가 후보를 제외할게요"
+            return "필참 조건을 먼저 확인할게요"
         case .burden:
             return "부담이 큰 시간을 줄일게요"
         case .availability:
@@ -2996,7 +3052,7 @@ private enum MeetingDerivationPhase: Int {
         case .filtering:
             return "선호 시간대와 제외 시간을 먼저 반영합니다."
         case .comparing:
-            return "모두가 참석하기 어려운 시간은 후보에서 제거합니다."
+            return "선택 참석자 불가는 후보를 없애기보다 순위에 반영합니다."
         case .burden:
             return "불가는 아니지만 부담이 큰 시간은 우선순위를 낮춥니다."
         case .availability:
@@ -3040,7 +3096,7 @@ private struct DerivationPhaseChipRow: View {
         .contentMargins(.horizontal, 0, for: .scrollContent)
         .scrollClipDisabled()
         .id(chips.map(\.title).joined(separator: "|"))
-        .transition(.opacity.combined(with: .move(edge: .top)))
+        .transition(.opacity.combined(with: .offset(y: 6)))
     }
 }
 
@@ -3085,6 +3141,16 @@ private struct FinalDerivationCandidate: Identifiable {
     var selectionInsights: [FinalCandidateInsight] {
         var insights: [FinalCandidateInsight] = []
 
+        if summary.unavailableCount == 0 {
+            insights.append(
+                FinalCandidateInsight(
+                    title: "전원 참석 가능",
+                    symbolName: "person.3.sequence.fill",
+                    color: Color(uiColor: .systemGreen)
+                )
+            )
+        }
+
         if summary.requiredUnavailableCount == 0 {
             insights.append(
                 FinalCandidateInsight(
@@ -3095,15 +3161,7 @@ private struct FinalDerivationCandidate: Identifiable {
             )
         }
 
-        if summary.unavailableCount == 0 {
-            insights.append(
-                FinalCandidateInsight(
-                    title: "불가 없음",
-                    symbolName: "checkmark.circle.fill",
-                    color: Color(uiColor: .systemGreen)
-                )
-            )
-        } else if summary.requiredUnavailableCount == 0 {
+        if summary.unavailableCount > 0 && summary.requiredUnavailableCount == 0 {
             insights.append(
                 FinalCandidateInsight(
                     title: "선택 \(summary.optionalUnavailableCount)명 불가",
@@ -3319,8 +3377,12 @@ private struct FinalCandidateDetailCard: View {
                     .foregroundStyle(.secondary)
             }
 
+            if candidate.summary.requiredUnavailableCount == 0 {
+                requiredEvidencePill
+            }
+
             FinalCandidateInsightPillRow(
-                insights: candidate.selectionInsights,
+                insights: supportingInsights,
                 maxVisible: 2
             )
 
@@ -3350,6 +3412,26 @@ private struct FinalCandidateDetailCard: View {
             onSelect()
             onShowDetails()
         }
+    }
+
+    private var supportingInsights: [FinalCandidateInsight] {
+        candidate.selectionInsights.filter { $0.title != "필참 전원 가능" }
+    }
+
+    private var requiredEvidencePill: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "person.2.badge.checkmark.fill")
+                .font(.system(size: 10, weight: .bold))
+
+            Text("필참 전원 가능")
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+        }
+        .foregroundStyle(Color(uiColor: .systemGreen))
+        .padding(.horizontal, 9)
+        .frame(height: 26)
+        .background(Color(uiColor: .systemGreen).opacity(0.12), in: Capsule())
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 
@@ -3692,23 +3774,27 @@ private struct SequentialDerivationTitle: View {
     let text: String
     let visibleCharacterCount: Int
 
-    private var characters: [String] {
-        text.map(String.init)
+    private var revealProgress: CGFloat {
+        let totalCount = max(text.count, 1)
+        return min(max(CGFloat(visibleCharacterCount) / CGFloat(totalCount), 0), 1)
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            ForEach(Array(characters.enumerated()), id: \.offset) { index, character in
-                Text(character)
-                    .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .opacity(index < visibleCharacterCount ? 1 : 0)
-                    .offset(y: index < visibleCharacterCount ? 0 : 7)
-                    .blur(radius: index < visibleCharacterCount ? 0 : 2.5)
+        Text(text)
+            .font(.system(size: 28, weight: .semibold))
+            .foregroundStyle(.primary)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .mask(alignment: .leading) {
+                Rectangle()
+                    .scaleEffect(x: revealProgress, anchor: .leading)
             }
-        }
+            .opacity(revealProgress > 0 ? 1 : 0)
+            .offset(y: revealProgress > 0 ? 0 : 5)
+            .blur(radius: revealProgress > 0 ? 0 : 1.4)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .animation(.easeOut(duration: 0.22), value: visibleCharacterCount)
+        .animation(.easeInOut(duration: 0.28), value: visibleCharacterCount)
+        .animation(.easeOut(duration: 0.24), value: text)
     }
 }
 
@@ -11468,6 +11554,7 @@ private struct TeamResponseSummary: Equatable {
     let availableNames: [String]
     let burdenMembers: [TeamResponseReason]
     let unavailableMembers: [TeamResponseReason]
+    let requiredAvailableNames: Set<String>
     let requiredAvailableCount: Int
     let requiredUnavailableCount: Int
     let optionalAvailableCount: Int
@@ -11549,11 +11636,11 @@ private struct TeamResponseSummary: Equatable {
     var mergeSignature: String {
         let available = availableNames.sorted().joined(separator: ",")
         let burden = burdenMembers
-            .map { "\($0.name):\($0.reason)" }
+            .map { "\($0.name):\($0.reason):\($0.isRequired)" }
             .sorted()
             .joined(separator: ",")
         let unavailable = unavailableMembers
-            .map { "\($0.name):\($0.reason)" }
+            .map { "\($0.name):\($0.reason):\($0.isRequired)" }
             .sorted()
             .joined(separator: ",")
 
@@ -11604,6 +11691,7 @@ private struct TeamResponseSummary: Equatable {
                 var available: [String] = []
                 var burden: [TeamResponseReason] = []
                 var unavailable: [TeamResponseReason] = []
+                var requiredAvailableNames: Set<String> = []
                 var requiredAvailableCount = 0
                 var requiredUnavailableCount = 0
                 var optionalAvailableCount = 0
@@ -11617,19 +11705,20 @@ private struct TeamResponseSummary: Equatable {
                         case .available:
                             available.append(name)
                             if isRequired {
+                                requiredAvailableNames.insert(name)
                                 requiredAvailableCount += 1
                             } else {
                                 optionalAvailableCount += 1
                             }
                         case .burden:
-                            burden.append(TeamResponseReason(name: name, reason: hostEntry.reason ?? "참석은 가능하지만 앞뒤 일정 조정이 필요합니다."))
+                            burden.append(TeamResponseReason(name: name, reason: hostEntry.reason ?? "참석은 가능하지만 앞뒤 일정 조정이 필요합니다.", isRequired: isRequired))
                             if isRequired {
                                 requiredAvailableCount += 1
                             } else {
                                 optionalAvailableCount += 1
                             }
                         case .unavailable:
-                            unavailable.append(TeamResponseReason(name: name, reason: hostEntry.reason ?? "이미 확정된 일정과 겹쳐 참석이 어렵습니다."))
+                            unavailable.append(TeamResponseReason(name: name, reason: hostEntry.reason ?? "이미 확정된 일정과 겹쳐 참석이 어렵습니다.", isRequired: isRequired))
                             if isRequired {
                                 requiredUnavailableCount += 1
                             } else {
@@ -11645,7 +11734,8 @@ private struct TeamResponseSummary: Equatable {
                         unavailable.append(
                             TeamResponseReason(
                                 name: name,
-                                reason: unavailableReasons[seed % unavailableReasons.count]
+                                reason: unavailableReasons[seed % unavailableReasons.count],
+                                isRequired: isRequired
                             )
                         )
                         if isRequired {
@@ -11657,7 +11747,8 @@ private struct TeamResponseSummary: Equatable {
                         burden.append(
                             TeamResponseReason(
                                 name: name,
-                                reason: burdenReasons[seed % burdenReasons.count]
+                                reason: burdenReasons[seed % burdenReasons.count],
+                                isRequired: isRequired
                             )
                         )
                         if isRequired {
@@ -11668,6 +11759,7 @@ private struct TeamResponseSummary: Equatable {
                     } else {
                         available.append(name)
                         if isRequired {
+                            requiredAvailableNames.insert(name)
                             requiredAvailableCount += 1
                         } else {
                             optionalAvailableCount += 1
@@ -11679,6 +11771,7 @@ private struct TeamResponseSummary: Equatable {
                     availableNames: available,
                     burdenMembers: burden,
                     unavailableMembers: unavailable,
+                    requiredAvailableNames: requiredAvailableNames,
                     requiredAvailableCount: requiredAvailableCount,
                     requiredUnavailableCount: requiredUnavailableCount,
                     optionalAvailableCount: optionalAvailableCount,
@@ -11806,9 +11899,10 @@ private enum ResponseReasonFormatter {
 private struct TeamResponseReason: Equatable, Identifiable {
     let name: String
     let reason: String
+    let isRequired: Bool
 
     var id: String {
-        "\(name)-\(reason)"
+        "\(name)-\(reason)-\(isRequired)"
     }
 
     var category: BurdenCategory {
