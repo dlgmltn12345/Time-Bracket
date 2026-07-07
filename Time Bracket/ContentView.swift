@@ -1186,14 +1186,17 @@ private struct DerivationCriteriaSheet: View {
                             .font(.system(size: 28, weight: .semibold))
                             .foregroundStyle(.primary)
 
-                        Text("필참자가 모두 가능한 시간을 먼저 남기고, 선택 참석자와 부담 조건을 반영해 최종 2안을 도출합니다.")
+                        Text("필참 조건을 먼저 보고, 부담과 선택 참석을 반영해요.")
                             .font(.system(size: 15, weight: .medium))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    criteriaCard(title: "선호 시간대") {
-                        Picker("선호 시간대", selection: $criteria.timePreference) {
+                    criteriaCard(
+                        title: "우선 시간대",
+                        detail: "선호하는 시간을 더 앞에 보여줍니다."
+                    ) {
+                        Picker("우선 시간대", selection: $criteria.timePreference) {
                             ForEach(DerivationTimePreference.allCases) { preference in
                                 Text(preference.title).tag(preference)
                             }
@@ -1201,11 +1204,14 @@ private struct DerivationCriteriaSheet: View {
                         .pickerStyle(.segmented)
                     }
 
-                    criteriaCard(title: "제외할 시간") {
+                    criteriaCard(
+                        title: "피할 시간",
+                        detail: "선택한 시간은 추천에서 제외합니다."
+                    ) {
                         VStack(spacing: 0) {
                             criteriaToggleRow(
                                 title: "아침 첫 시간 제외",
-                                detail: "9시 시작 후보를 뒤로 미룹니다",
+                                detail: "9시 시작 시간을 제외합니다",
                                 symbolName: "sunrise.fill",
                                 isOn: $criteria.avoidsEarlyMorning
                             )
@@ -1215,7 +1221,7 @@ private struct DerivationCriteriaSheet: View {
 
                             criteriaToggleRow(
                                 title: "점심 직후 제외",
-                                detail: "13시 시작 후보를 제외합니다",
+                                detail: "13시 시작 시간을 제외합니다",
                                 symbolName: "fork.knife",
                                 isOn: $criteria.avoidsAfterLunch
                             )
@@ -1225,23 +1231,24 @@ private struct DerivationCriteriaSheet: View {
 
                             criteriaToggleRow(
                                 title: "퇴근 직전 제외",
-                                detail: "17시 시작 후보를 뒤로 미룹니다",
+                                detail: "17시 시작 시간을 제외합니다",
                                 symbolName: "moon.zzz.fill",
                                 isOn: $criteria.avoidsNearLeaving
                             )
                         }
                     }
 
-                    criteriaCard(title: "후보 정렬 기준") {
-                        Picker("판단 기준", selection: $criteria.priority) {
+                    criteriaCard(
+                        title: "추천 방식",
+                        detail: "남은 시간을 어떤 기준으로 고를지 정합니다."
+                    ) {
+                        Picker("추천 방식", selection: $criteria.priority) {
                             ForEach(DerivationDecisionPriority.allCases) { priority in
                                 Text(priority.title).tag(priority)
                             }
                         }
                         .pickerStyle(.segmented)
                     }
-
-                    criteriaPolicyCard
 
                     Button(action: onStart) {
                         Text("이 기준으로 도출하기")
@@ -1268,70 +1275,30 @@ private struct DerivationCriteriaSheet: View {
         }
     }
 
-    private func criteriaCard<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+    private func criteriaCard<Content: View>(
+        title: String,
+        detail: String? = nil,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
         VStack(alignment: .leading, spacing: 13) {
-            Text(title)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(.primary)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                if let detail {
+                    Text(detail)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
 
             content()
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-    }
-
-    private var criteriaPolicyCard: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            Text("고정 원칙")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(.primary)
-
-            criteriaPolicyRow(
-                title: "필참 불가는 제외",
-                detail: "꼭 참석해야 하는 사람이 불가한 시간은 후보에서 제외합니다.",
-                symbolName: "person.crop.circle.badge.xmark.fill",
-                tint: Color(uiColor: .systemRed)
-            )
-
-            criteriaPolicyRow(
-                title: "선택 불가는 우선순위에 반영",
-                detail: "선택 참석자가 불가한 시간은 제외하지 않고 순위를 낮춥니다.",
-                symbolName: "minus.circle.fill",
-                tint: Color(uiColor: .systemOrange)
-            )
-
-            criteriaPolicyRow(
-                title: "부담 응답은 우선순위에 반영",
-                detail: "참석은 가능하지만 일정/이동/컨디션 부담이 큰 시간은 뒤로 미룹니다.",
-                symbolName: "exclamationmark.triangle.fill",
-                tint: Color(uiColor: .systemOrange)
-            )
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-    }
-
-    private func criteriaPolicyRow(title: String, detail: String, symbolName: String, tint: Color) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: symbolName)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(tint)
-                .frame(width: 28, height: 28)
-                .background(tint.opacity(0.1), in: Circle())
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.primary)
-
-                Text(detail)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
     }
 
     private func criteriaToggleRow(
@@ -1354,7 +1321,7 @@ private struct DerivationCriteriaSheet: View {
                         .foregroundStyle(.primary)
 
                     Text(detail)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -1447,7 +1414,7 @@ private enum DerivationDecisionPriority: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .allAvailable:
-            return "가능 우선"
+            return "참석 우선"
         case .lowBurden:
             return "부담 최소"
         case .requiredFirst:
@@ -2600,7 +2567,7 @@ private struct BracketReviewScreen: View {
                 groups.append(
                     EliminatedCandidateGroup(
                         title: "참여율 낮음",
-                        detail: "다른 후보보다 가능 인원이 적은 시간입니다.",
+                        detail: "다른 검토 후보보다 참석 가능성이 낮은 시간입니다.",
                         tint: Color(uiColor: .systemBlue),
                         slots: lowAvailabilitySlots
                     )
@@ -2868,7 +2835,7 @@ private struct BracketReviewScreen: View {
         case .preparing:
             return [
                 DerivationPhaseChip(title: "응답 \(meeting.respondedCount)/\(meeting.memberCount)", symbolName: "checkmark.circle.fill", color: Color(uiColor: .systemGreen)),
-                DerivationPhaseChip(title: "후보 \(derivationSlots.count)개", symbolName: "square.grid.3x3.fill", color: Color(uiColor: .systemBlue))
+                DerivationPhaseChip(title: "검토 \(derivationSlots.count)개", symbolName: "square.grid.3x3.fill", color: Color(uiColor: .systemBlue))
             ]
         case .filtering:
             return filteringChips
@@ -2885,11 +2852,11 @@ private struct BracketReviewScreen: View {
         case .availability:
             return [
                 DerivationPhaseChip(title: availabilityThresholdText, symbolName: "person.2.fill", color: Color(uiColor: .systemGreen)),
-                DerivationPhaseChip(title: "가능 인원 우선", symbolName: "checkmark.circle.fill", color: Color(uiColor: .systemGreen))
+                DerivationPhaseChip(title: "참석 가능성 우선", symbolName: "checkmark.circle.fill", color: Color(uiColor: .systemGreen))
             ]
         case .final:
             return [
-                DerivationPhaseChip(title: "최종 2안", symbolName: "sparkles", color: Color(uiColor: .systemBlue)),
+                DerivationPhaseChip(title: "추천 2안", symbolName: "sparkles", color: Color(uiColor: .systemBlue)),
                 DerivationPhaseChip(title: meeting.derivationCriteria.priority.title, symbolName: "slider.horizontal.3", color: Color(uiColor: .systemIndigo))
             ]
         }
@@ -2951,10 +2918,10 @@ private struct BracketReviewScreen: View {
 
     private var availabilityThresholdText: String {
         guard let minimumPreferredAvailableCount else {
-            return "가능 인원 동일"
+            return "참석 가능성 동일"
         }
 
-        return "가능 \(minimumPreferredAvailableCount)명 우선"
+        return "\(minimumPreferredAvailableCount)명 이상 우선"
     }
 
     private func isBetterDerivationSlot(_ lhs: DerivationResponseSlot, _ rhs: DerivationResponseSlot) -> Bool {
@@ -2997,32 +2964,32 @@ private enum MeetingDerivationPhase: Int {
     var title: String {
         switch self {
         case .preparing:
-            return "응답 블럭을 후보로 펼치는 중"
+            return "응답 블럭을 검토 후보로 펼치는 중"
         case .filtering:
             return "선택 기준을 반영 중"
         case .comparing:
-            return "필참 불가 후보를 제외 중"
+            return "필참 불가 시간을 제외 중"
         case .burden:
             return "부담이 큰 시간을 줄이는 중"
         case .availability:
-            return "가능 인원이 많은 시간을 남기는 중"
+            return "참석 가능성이 높은 시간을 남기는 중"
         case .final:
-            return "최종 후보 2개가 남았어요"
+            return "추천 후보 2개가 남았어요"
         }
     }
 
     var detail: String {
         switch self {
         case .preparing:
-            return "요일별 시간 블럭을 회의 후보 카드로 변환합니다"
+            return "요일별 시간 블럭을 비교 가능한 검토 후보로 변환합니다"
         case .filtering:
             return "필참 조건과 불가 응답을 먼저 확인합니다"
         case .comparing:
-            return "필참 불가 후보는 제외하고, 선택 참석자 불가는 우선순위에 반영합니다"
+            return "필참자가 불가한 시간은 제외하고, 선택 참석자 불가는 우선순위에 반영합니다"
         case .burden:
             return "참석은 가능하지만 부담이 큰 시간은 뒤로 미룹니다"
         case .availability:
-            return "부담 없이 가능한 팀원이 많은 시간을 우선합니다"
+            return "부담 없이 참석 가능한 팀원이 많은 시간을 우선합니다"
         case .final:
             return "시스템 추천안을 확인하고 주최자가 확정합니다"
         }
@@ -3039,26 +3006,26 @@ private enum MeetingDerivationPhase: Int {
         case .burden:
             return "부담이 큰 시간을 줄일게요"
         case .availability:
-            return "가능 인원이 많은 시간을 남길게요"
+            return "참석 가능성이 높은 시간을 남길게요"
         case .final:
-            return "최종 후보를 제안할게요"
+            return "추천 후보를 제안할게요"
         }
     }
 
     var onboardingDetail: String {
         switch self {
         case .preparing:
-            return "팀원들이 입력한 시간을 회의 후보로 바꿉니다."
+            return "팀원들이 입력한 시간을 검토 후보로 바꿉니다."
         case .filtering:
-            return "선호 시간대와 제외 시간을 먼저 반영합니다."
+            return "우선 시간대와 피할 시간을 먼저 반영합니다."
         case .comparing:
-            return "선택 참석자 불가는 후보를 없애기보다 순위에 반영합니다."
+            return "선택 참석자 불가는 제외하지 않고 순위에 반영합니다."
         case .burden:
             return "불가는 아니지만 부담이 큰 시간은 우선순위를 낮춥니다."
         case .availability:
-            return "남은 후보 중 부담 없이 가능한 인원이 많은 시간을 남깁니다."
+            return "남은 검토 후보 중 참석 가능성이 높은 시간을 남깁니다."
         case .final:
-            return "남은 후보 중 가장 좋은 시간을 제안합니다."
+            return "남은 검토 후보 중 가장 설득력 있는 시간을 제안합니다."
         }
     }
 }
@@ -3274,7 +3241,7 @@ private struct FinalCandidateComparisonView: View {
                 .padding(.vertical, 2)
 
                 Button(action: onShowEliminated) {
-                    Label("후보군 보기", systemImage: "line.3.horizontal.decrease.circle")
+                    Label("검토 후보 보기", systemImage: "line.3.horizontal.decrease.circle")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color(uiColor: .systemBlue))
                         .padding(.horizontal, 10)
@@ -3573,7 +3540,7 @@ private struct FinalCandidateDetailSheet: View {
                 .padding(.bottom, 28)
             }
             .background(Color(uiColor: .systemBackground))
-            .navigationTitle("후보 상세")
+            .navigationTitle("추천안 상세")
             .navigationBarTitleDisplayMode(.inline)
         }
     }
@@ -3758,7 +3725,7 @@ private struct EliminatedCandidateRow: View {
 
             Spacer(minLength: 0)
 
-            Text("후보군에 올리기")
+            Text("검토 후보로 복원")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(tint)
                 .padding(.horizontal, 9)
@@ -3774,27 +3741,30 @@ private struct SequentialDerivationTitle: View {
     let text: String
     let visibleCharacterCount: Int
 
-    private var revealProgress: CGFloat {
-        let totalCount = max(text.count, 1)
-        return min(max(CGFloat(visibleCharacterCount) / CGFloat(totalCount), 0), 1)
+    private var characters: [String] {
+        text.map(String.init)
     }
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 28, weight: .semibold))
-            .foregroundStyle(.primary)
-            .lineLimit(2)
-            .fixedSize(horizontal: false, vertical: true)
-            .mask(alignment: .leading) {
-                Rectangle()
-                    .scaleEffect(x: revealProgress, anchor: .leading)
+        HStack(spacing: 0) {
+            ForEach(Array(characters.enumerated()), id: \.offset) { index, character in
+                let isVisible = index < visibleCharacterCount
+
+                Text(character)
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .opacity(isVisible ? 1 : 0)
+                    .offset(y: isVisible ? 0 : 4)
+                    .blur(radius: isVisible ? 0 : 0.9)
+                    .animation(
+                        .interpolatingSpring(stiffness: 240, damping: 30, initialVelocity: 0),
+                        value: isVisible
+                    )
             }
-            .opacity(revealProgress > 0 ? 1 : 0)
-            .offset(y: revealProgress > 0 ? 0 : 5)
-            .blur(radius: revealProgress > 0 ? 0 : 1.4)
+        }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .animation(.easeInOut(duration: 0.28), value: visibleCharacterCount)
-        .animation(.easeOut(duration: 0.24), value: text)
+        .id(text)
+        .transition(.opacity.combined(with: .offset(y: 3)))
     }
 }
 
@@ -4599,7 +4569,7 @@ private struct DerivationCandidateCard: View {
                 .foregroundStyle(.primary)
 
             HStack(spacing: 5) {
-                Text(isFinalist ? "후보 유지" : candidate.reasonText)
+                Text(isFinalist ? "검토 유지" : candidate.reasonText)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(isFinalist ? Color(uiColor: .systemBlue) : .secondary)
                     .lineLimit(1)
@@ -4689,7 +4659,7 @@ private struct DecisionOverviewCard: View {
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(.primary)
 
-                Text("\(candidateCount)개 후보를 비교해 최종 \(finalCount)안을 남겼어요")
+                Text("\(candidateCount)개 검토 후보를 비교해 추천 \(finalCount)안을 남겼어요")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.secondary)
             }
@@ -4727,7 +4697,7 @@ private struct DailyCandidateExtractionCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
             HStack {
-                Text("요일별 후보")
+                Text("요일별 검토 후보")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.primary)
 
@@ -11662,22 +11632,22 @@ private struct TeamResponseSummary: Equatable {
             index < memberNames.count ? memberNames[index] : "팀원 \(index)"
         }
         let burdenReasons = [
-            "일정: 바로 전 디자인 리뷰가 끝난 직후라 회의 준비 시간이 거의 없습니다.",
-            "일정: 고객 피드백 정리 마감과 붙어 있어 참석은 가능하지만 집중이 분산됩니다.",
-            "이동: 외부 사용자 인터뷰 후 복귀 시간이 애매해 10분 이상 늦을 수 있습니다.",
-            "이동: 촬영 장비 반납 후 회의실로 이동해야 해서 시작 시간이 불안정합니다.",
-            "컨디션: 점심 직후라 집중도가 낮아 중요한 의사결정 회의에는 부담됩니다.",
-            "컨디션: 오전 회의가 연속으로 잡혀 있어 짧은 회복 시간이 필요합니다.",
-            "개인: 어린이집 하원 연락을 확인해야 하는 시간대라 중간 이탈 가능성이 있습니다.",
-            "개인: 병원 예약 전후라 참석은 가능하지만 안정적으로 참여하기 어렵습니다."
+            "일정: 바로 전 디자인 리뷰가 끝난 직후라\n회의 준비 시간이 거의 없습니다.",
+            "일정: 고객 피드백 정리 마감과 붙어 있어\n참석은 가능하지만 집중이 분산됩니다.",
+            "이동: 외부 사용자 인터뷰 후 복귀 시간이 애매해\n10분 이상 늦을 수 있습니다.",
+            "이동: 촬영 장비 반납 후 회의실로 이동해야 해서\n시작 시간이 불안정합니다.",
+            "컨디션: 점심 직후라 집중도가 낮아\n중요한 의사결정 회의에는 부담됩니다.",
+            "컨디션: 오전 회의가 연속으로 잡혀 있어\n짧은 회복 시간이 필요합니다.",
+            "개인: 어린이집 하원 연락을 확인해야 해서\n중간 이탈 가능성이 있습니다.",
+            "개인: 병원 예약 전후라 참석은 가능하지만\n안정적으로 참여하기 어렵습니다."
         ]
         let unavailableReasons = [
-            "일정: 이미 확정된 고객사 리뷰 회의와 겹쳐 참석할 수 없습니다.",
-            "일정: 스프린트 최종 승인 회의가 고정되어 시간 변경이 어렵습니다.",
-            "이동: 외근 미팅 장소에서 복귀 중인 시간이라 온라인 참석도 어렵습니다.",
-            "이동: 사용자 인터뷰 이동 시간과 겹쳐 회의 시작 전에 도착할 수 없습니다.",
-            "개인: 병원 예약이 확정되어 해당 시간에는 응답이 어렵습니다.",
-            "개인: 가족 일정으로 자리를 비워야 해서 회의 참여가 불가능합니다."
+            "일정: 이미 확정된 고객사 리뷰 회의와 겹쳐\n참석할 수 없습니다.",
+            "일정: 스프린트 최종 승인 회의가 고정되어\n시간 변경이 어렵습니다.",
+            "이동: 외근 미팅 장소에서 복귀 중인 시간이라\n온라인 참석도 어렵습니다.",
+            "이동: 사용자 인터뷰 이동 시간과 겹쳐\n회의 시작 전에 도착할 수 없습니다.",
+            "개인: 병원 예약이 확정되어\n해당 시간에는 응답이 어렵습니다.",
+            "개인: 가족 일정으로 자리를 비워야 해서\n회의 참여가 불가능합니다."
         ]
         var summaries: [AvailabilitySlot: TeamResponseSummary] = [:]
 
