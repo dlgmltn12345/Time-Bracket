@@ -123,22 +123,22 @@ struct ContentView: View {
         }
     }
 
-    private func shareHostAvailability(for meetingID: String) {
+    private func shareHostAvailability(for meetingID: String, availabilityEntries: [AvailabilitySlot: AvailabilityEntry]) {
         guard let meetingIndex = meetings.firstIndex(where: { $0.id == meetingID }) else {
             return
         }
 
-        let updatedMeeting = meetings[meetingIndex].sharedWithMembers()
+        let updatedMeeting = meetings[meetingIndex].sharedWithMembers(hostAvailabilityEntries: availabilityEntries)
         meetings[meetingIndex] = updatedMeeting
         selectedMeeting = updatedMeeting
     }
 
-    private func compareCandidateTimes(for meetingID: String) {
+    private func compareCandidateTimes(for meetingID: String, criteria: DerivationCriteria) {
         guard let meetingIndex = meetings.firstIndex(where: { $0.id == meetingID }) else {
             return
         }
 
-        let updatedMeeting = meetings[meetingIndex].readyForComparison()
+        let updatedMeeting = meetings[meetingIndex].readyForComparison(criteria: criteria)
         meetings[meetingIndex] = updatedMeeting
         selectedMeeting = updatedMeeting
     }
@@ -154,6 +154,8 @@ struct ContentView: View {
             dateRange: dateRangeText(for: candidateDates),
             timeRange: draft.availabilityWindowText,
             excludedTimeRule: draft.excludedTimeRule,
+            derivationCriteria: .default,
+            hostAvailabilityEntries: [:],
             memberCount: draft.members.count + 1,
             respondedCount: 0,
             status: .waiting,
@@ -238,8 +240,8 @@ private struct MeetingWorkspaceScreen: View {
     let events: [ScheduleEvent]
     let meeting: HomeMeeting?
     let calendar: Calendar
-    let onShareWithMembers: (String) -> Void
-    let onCompareResponses: (String) -> Void
+    let onShareWithMembers: (String, [AvailabilitySlot: AvailabilityEntry]) -> Void
+    let onCompareResponses: (String, DerivationCriteria) -> Void
 
     var body: some View {
         if let meeting {
@@ -340,14 +342,16 @@ private struct CalendarScreen: View {
     let events: [ScheduleEvent]
     let meeting: HomeMeeting
     let calendar: Calendar
-    let onShareWithMembers: (String) -> Void
-    let onCompareResponses: (String) -> Void
+    let onShareWithMembers: (String, [AvailabilitySlot: AvailabilityEntry]) -> Void
+    let onCompareResponses: (String, DerivationCriteria) -> Void
 
     @State private var availabilityMode: AvailabilityMode = .available
     @State private var availabilityEntries: [AvailabilitySlot: AvailabilityEntry] = [:]
     @State private var reasonDraft: AvailabilityReasonDraft?
     @State private var isHostAvailabilityComplete = false
     @State private var isShareConfirmationPresented = false
+    @State private var isDerivationCriteriaPresented = false
+    @State private var derivationCriteria = DerivationCriteria.default
     @State private var schedulePageIndex = 0
     @State private var sharedCalendarViewMode: SharedCalendarViewMode = .teamResponses
     @State private var isDerivationTransitionActive = false
@@ -461,17 +465,9 @@ private struct CalendarScreen: View {
                         .offset(y: isDerivationTransitionActive ? -34 : 0)
                         .opacity(isDerivationTransitionActive ? 0.16 : 1)
                     }
-                    .overlay(alignment: .top) {
-                        if isDerivationTransitionActive {
-                            CalendarDerivationTransitionOverlay()
-                                .padding(.horizontal, LayoutMetrics.horizontalPadding)
-                                .padding(.top, 28)
-                                .transition(.move(edge: .bottom).combined(with: .opacity))
-                        }
-                    }
                 }
             }
-            .animation(.spring(response: 0.52, dampingFraction: 0.9, blendDuration: 0.06), value: isDerivationTransitionActive)
+            .animation(.spring(response: 0.72, dampingFraction: 0.92, blendDuration: 0.08), value: isDerivationTransitionActive)
 
             Group {
                 if isSharedCalendar {
@@ -480,7 +476,8 @@ private struct CalendarScreen: View {
                         respondedCount: simulatedRespondedCount,
                         memberCount: meeting.memberCount,
                         onCompare: {
-                            startDerivationTransition()
+                            derivationCriteria = meeting.derivationCriteria
+                            isDerivationCriteriaPresented = true
                         }
                     )
                 } else {
@@ -503,6 +500,12 @@ private struct CalendarScreen: View {
             .padding(.bottom, 12)
             .opacity(isDerivationTransitionActive ? 0 : 1)
             .offset(y: isDerivationTransitionActive ? 28 : 0)
+
+            if isDerivationTransitionActive {
+                CalendarDerivationTransitionOverlay()
+                    .transition(.opacity)
+                    .zIndex(10)
+            }
         }
         .background(Color(uiColor: .systemBackground))
         .sheet(item: $reasonDraft) { draft in
@@ -529,12 +532,30 @@ private struct CalendarScreen: View {
                 },
                 onShare: {
                     isShareConfirmationPresented = false
-                    onShareWithMembers(meeting.id)
+                    onShareWithMembers(meeting.id, availabilityEntries)
                 }
             )
             .presentationDetents([.medium])
             .presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: $isDerivationCriteriaPresented) {
+            DerivationCriteriaSheet(
+                criteria: $derivationCriteria,
+                onCancel: {
+                    isDerivationCriteriaPresented = false
+                },
+                onStart: {
+                    let criteria = derivationCriteria
+                    isDerivationCriteriaPresented = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                        startDerivationTransition(criteria: criteria)
+                    }
+                }
+            )
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+        }
+        .toolbar(isDerivationTransitionActive ? .hidden : .visible, for: .tabBar)
     }
 
     private var navigationTitle: String {
@@ -557,6 +578,10 @@ private struct CalendarScreen: View {
     private var scheduleAvailabilityEntries: [AvailabilitySlot: AvailabilityEntry] {
         guard isSharedCalendar, availabilityEntries.isEmpty else {
             return availabilityEntries
+        }
+
+        if !meeting.hostAvailabilityEntries.isEmpty {
+            return meeting.hostAvailabilityEntries
         }
 
         return prototypeHostAvailabilityEntries
@@ -668,68 +693,7 @@ private struct CalendarScreen: View {
     }
 
     private var teamResponseSummaries: [AvailabilitySlot: TeamResponseSummary] {
-        let fallbackNames = ["나", "김민준", "이서연", "오유진", "송승아", "박도윤"]
-        let memberNames = (meeting.memberInitials.isEmpty ? fallbackNames : meeting.memberInitials)
-        let normalizedNames = (0..<max(meeting.memberCount, memberNames.count)).map { index in
-            index < memberNames.count ? memberNames[index] : "팀원 \(index)"
-        }
-        let burdenReasons = ["앞 일정과 붙어 있음", "이동 시간이 필요함", "준비 시간이 부족함"]
-        let unavailableReasons = ["이미 확정된 회의", "외부 미팅", "개인 일정"]
-        var summaries: [AvailabilitySlot: TeamResponseSummary] = [:]
-
-        for (dayIndex, date) in candidateDates.enumerated() {
-            for hour in 9..<18 {
-                let slot = AvailabilitySlot(date: calendar.startOfDay(for: date), hour: hour)
-                guard !isExcludedSlot(slot) else {
-                    continue
-                }
-
-                var available: [String] = []
-                var burden: [TeamResponseReason] = []
-                var unavailable: [TeamResponseReason] = []
-
-                for (memberIndex, name) in normalizedNames.enumerated() {
-                    if memberIndex == 0, let hostEntry = availabilityEntries[slot] {
-                        switch hostEntry.mode {
-                        case .available:
-                            available.append(name)
-                        case .burden:
-                            burden.append(TeamResponseReason(name: name, reason: hostEntry.reason ?? "조정 가능"))
-                        case .unavailable:
-                            unavailable.append(TeamResponseReason(name: name, reason: hostEntry.reason ?? "참석 어려움"))
-                        }
-                        continue
-                    }
-
-                    let seed = dayIndex * 11 + hour + memberIndex * 3
-                    if seed % 9 == 0 {
-                        unavailable.append(
-                            TeamResponseReason(
-                                name: name,
-                                reason: unavailableReasons[seed % unavailableReasons.count]
-                            )
-                        )
-                    } else if seed % 5 == 0 {
-                        burden.append(
-                            TeamResponseReason(
-                                name: name,
-                                reason: burdenReasons[seed % burdenReasons.count]
-                            )
-                        )
-                    } else {
-                        available.append(name)
-                    }
-                }
-
-                summaries[slot] = TeamResponseSummary(
-                    availableNames: available,
-                    burdenMembers: burden,
-                    unavailableMembers: unavailable
-                )
-            }
-        }
-
-        return summaries
+        TeamResponseSummary.makeSummaries(for: meeting, dates: candidateDates, calendar: calendar)
     }
 
     private var availabilityStateAnimation: Animation {
@@ -740,7 +704,7 @@ private struct CalendarScreen: View {
         meeting.excludedTimeRule.excludes(hour: slot.hour, date: slot.date, calendar: calendar)
     }
 
-    private func startDerivationTransition() {
+    private func startDerivationTransition(criteria: DerivationCriteria) {
         guard !isDerivationTransitionActive else {
             return
         }
@@ -749,8 +713,8 @@ private struct CalendarScreen: View {
             isDerivationTransitionActive = true
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.78) {
-            onCompareResponses(meeting.id)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.08) {
+            onCompareResponses(meeting.id, criteria)
         }
     }
 
@@ -1095,69 +1059,259 @@ private struct SharedCalendarToolbar: View {
     }
 }
 
-private struct CalendarDerivationTransitionOverlay: View {
+private struct DerivationCriteriaSheet: View {
+    @Binding var criteria: DerivationCriteria
+
+    let onCancel: () -> Void
+    let onStart: () -> Void
+
     var body: some View {
-        VStack(spacing: 14) {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(Color(uiColor: .systemBlue).opacity(0.12))
+        NavigationStack {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("어떤 기준으로 볼까요?")
+                            .font(.system(size: 28, weight: .semibold))
+                            .foregroundStyle(.primary)
 
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(Color(uiColor: .systemBlue))
+                        Text("선택한 기준에 따라 불가 후보를 제외하고, 남은 시간 중 최종 2안을 도출합니다.")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    criteriaCard(title: "선호 시간대") {
+                        Picker("선호 시간대", selection: $criteria.timePreference) {
+                            ForEach(DerivationTimePreference.allCases) { preference in
+                                Text(preference.title).tag(preference)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                    }
+
+                    criteriaCard(title: "제외할 시간") {
+                        VStack(spacing: 0) {
+                            criteriaToggleRow(
+                                title: "아침 첫 시간 제외",
+                                detail: "9시 시작 후보를 뒤로 미룹니다",
+                                symbolName: "sunrise.fill",
+                                isOn: $criteria.avoidsEarlyMorning
+                            )
+
+                            Divider()
+                                .padding(.leading, 40)
+
+                            criteriaToggleRow(
+                                title: "점심 직후 제외",
+                                detail: "13시 시작 후보를 제외합니다",
+                                symbolName: "fork.knife",
+                                isOn: $criteria.avoidsAfterLunch
+                            )
+
+                            Divider()
+                                .padding(.leading, 40)
+
+                            criteriaToggleRow(
+                                title: "퇴근 직전 제외",
+                                detail: "17시 시작 후보를 뒤로 미룹니다",
+                                symbolName: "moon.zzz.fill",
+                                isOn: $criteria.avoidsNearLeaving
+                            )
+                        }
+                    }
+
+                    criteriaCard(title: "판단 기준") {
+                        Picker("판단 기준", selection: $criteria.priority) {
+                            ForEach(DerivationDecisionPriority.allCases) { priority in
+                                Text(priority.title).tag(priority)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                    }
+
+                    Button(action: onStart) {
+                        Text("이 기준으로 도출하기")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 52)
+                            .background(Color(uiColor: .systemBlue), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 2)
                 }
-                .frame(width: 42, height: 42)
+                .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                .padding(.top, 22)
+                .padding(.bottom, 24)
+            }
+            .background(Color(uiColor: .systemGroupedBackground))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("취소", action: onCancel)
+                }
+            }
+        }
+    }
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("회의 시간을 도출하고 있어요")
-                        .font(.system(size: 18, weight: .semibold))
+    private func criteriaCard<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 13) {
+            Text(title)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.primary)
+
+            content()
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private func criteriaToggleRow(
+        title: String,
+        detail: String,
+        symbolName: String,
+        isOn: Binding<Bool>
+    ) -> some View {
+        Toggle(isOn: isOn) {
+            HStack(spacing: 12) {
+                Image(systemName: symbolName)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color(uiColor: .systemBlue))
+                    .frame(width: 28, height: 28)
+                    .background(Color(uiColor: .systemBlue).opacity(0.1), in: Circle())
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.primary)
 
-                    Text("응답 블럭을 후보 카드로 정리합니다")
-                        .font(.system(size: 13, weight: .medium))
+                    Text(detail)
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-            }
-
-            HStack(spacing: 9) {
-                ForEach(0..<3, id: \.self) { index in
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(Color(uiColor: .systemBackground))
-                        .overlay(alignment: .topTrailing) {
-                            if index == 2 {
-                                Circle()
-                                    .fill(Color(uiColor: .systemRed).opacity(0.82))
-                                    .frame(width: 5, height: 5)
-                                    .padding(8)
-                            }
-                        }
-                        .frame(height: 96)
-                        .overlay(alignment: .bottomLeading) {
-                            VStack(alignment: .leading, spacing: 5) {
-                                Capsule()
-                                    .fill(Color(uiColor: .tertiaryLabel).opacity(0.22))
-                                    .frame(width: index == 0 ? 54 : 42, height: 7)
-
-                                Capsule()
-                                    .fill(Color(uiColor: .tertiaryLabel).opacity(0.14))
-                                    .frame(width: index == 1 ? 48 : 62, height: 7)
-                            }
-                            .padding(12)
-                        }
-                        .offset(y: CGFloat(index) * 6)
+                        .lineLimit(1)
                 }
             }
         }
-        .padding(HomeGridMetrics.cardPadding)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(Color.white.opacity(0.5), lineWidth: 0.8)
+        .toggleStyle(.switch)
+        .tint(Color(uiColor: .systemBlue))
+        .frame(minHeight: 58)
+    }
+}
+
+private struct DerivationCriteria: Equatable {
+    var timePreference: DerivationTimePreference
+    var avoidsEarlyMorning: Bool
+    var avoidsAfterLunch: Bool
+    var avoidsNearLeaving: Bool
+    var priority: DerivationDecisionPriority
+
+    static let `default` = DerivationCriteria(
+        timePreference: .any,
+        avoidsEarlyMorning: false,
+        avoidsAfterLunch: true,
+        avoidsNearLeaving: true,
+        priority: .allAvailable
+    )
+
+    func excludes(hour: Int) -> Bool {
+        (avoidsEarlyMorning && hour == 9) ||
+            (avoidsAfterLunch && hour == 13) ||
+            (avoidsNearLeaving && hour >= 17)
+    }
+
+    func timePreferencePenalty(for hour: Int) -> Int {
+        switch timePreference {
+        case .any:
+            return 0
+        case .morning:
+            return hour < 12 ? 0 : (hour - 11) * 4
+        case .afternoon:
+            return hour >= 13 ? 0 : (13 - hour) * 4
         }
-        .shadow(color: Color.black.opacity(0.08), radius: 18, y: 8)
+    }
+
+    func score(for block: DerivationResponseBlock) -> Int {
+        let baseScore: Int
+
+        switch priority {
+        case .allAvailable:
+            baseScore = block.availableCount * 14 - block.burdenCount * 5
+        case .lowBurden:
+            baseScore = block.availableCount * 10 - block.burdenCount * 10
+        case .requiredFirst:
+            baseScore = block.availableCount * 12 - block.unavailableCount * 18 - block.burdenCount * 4
+        }
+
+        return baseScore + block.hourSpan * 4 - timePreferencePenalty(for: block.startHour)
+    }
+}
+
+private enum DerivationTimePreference: String, CaseIterable, Identifiable {
+    case any
+    case morning
+    case afternoon
+
+    var id: String {
+        rawValue
+    }
+
+    var title: String {
+        switch self {
+        case .any:
+            return "상관없음"
+        case .morning:
+            return "오전"
+        case .afternoon:
+            return "오후"
+        }
+    }
+}
+
+private enum DerivationDecisionPriority: String, CaseIterable, Identifiable {
+    case allAvailable
+    case lowBurden
+    case requiredFirst
+
+    var id: String {
+        rawValue
+    }
+
+    var title: String {
+        switch self {
+        case .allAvailable:
+            return "가능 우선"
+        case .lowBurden:
+            return "부담 최소"
+        case .requiredFirst:
+            return "필참 우선"
+        }
+    }
+}
+
+private struct CalendarDerivationTransitionOverlay: View {
+    var body: some View {
+        ZStack {
+            Color(uiColor: .systemBackground)
+                .ignoresSafeArea()
+
+            VStack(spacing: 12) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(Color(uiColor: .systemBlue))
+                    .frame(width: 48, height: 48)
+                    .background(Color(uiColor: .systemBlue).opacity(0.1), in: Circle())
+
+                Text("회의 시간을 준비하고 있어요")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                Text("응답 블럭을 정리하는 중")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .offset(y: -18)
+        }
     }
 }
 
@@ -1948,6 +2102,9 @@ private struct BracketReviewScreen: View {
     let meeting: HomeMeeting
 
     @State private var phase: MeetingDerivationPhase = .preparing
+    @State private var visibleTitleCharacterCount = 0
+    @State private var isDetailVisible = false
+    @State private var visibleResponseBlockCount = 0
 
     private var calendar: Calendar {
         var calendar = Calendar.current
@@ -1974,77 +2131,45 @@ private struct BracketReviewScreen: View {
     }
 
     private var sequenceCandidates: [MeetingDecisionCandidate] {
-        let orderedCandidates = candidates.sorted { lhs, rhs in
-            if calendar.isDate(lhs.date, inSameDayAs: rhs.date) {
-                return lhs.hour < rhs.hour
-            }
+        MeetingDecisionCandidate.makeOnboardingGridCandidates(for: meeting, calendar: calendar)
+    }
 
-            return lhs.date < rhs.date
-        }
-
-        var selectedCandidates = Array(orderedCandidates.prefix(8))
-
-        for candidate in finalCandidates where !selectedCandidates.contains(candidate) {
-            selectedCandidates.append(candidate)
-        }
-
-        return Array(selectedCandidates.prefix(8))
+    private var derivationSlots: [DerivationResponseSlot] {
+        DerivationResponseSlot.makeSlots(for: meeting, calendar: calendar)
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            WorkspaceHeader(title: "회의 도출")
-            MeetingContextBar(meeting: meeting)
+        VStack(alignment: .leading, spacing: 0) {
+            Spacer()
+                .frame(height: 42)
 
-            GeometryReader { proxy in
-                ZStack(alignment: .top) {
-                    DerivationCalendarGhost(
-                        candidates: sequenceCandidates,
-                        calendar: calendar,
-                        phase: phase
-                    )
-                    .padding(.horizontal, LayoutMetrics.horizontalPadding)
-                    .padding(.top, 12)
+            SequentialDerivationTitle(
+                text: phase.onboardingTitle,
+                visibleCharacterCount: visibleTitleCharacterCount
+            )
+            .padding(.horizontal, LayoutMetrics.horizontalPadding)
 
-                    VStack(spacing: 14) {
-                        DerivationStatusHeader(
-                            phase: phase,
-                            candidateCount: sequenceCandidates.count,
-                            finalCount: finalCandidates.count
-                        )
-                        .padding(.horizontal, LayoutMetrics.horizontalPadding)
-                        .padding(.top, phase == .preparing ? 190 : 20)
+            Text(phase.onboardingDetail)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                .padding(.top, 10)
+                .opacity(isDetailVisible ? 1 : 0)
+                .offset(y: isDetailVisible ? 0 : 8)
+                .animation(.easeOut(duration: 0.32), value: isDetailVisible)
+                .contentTransition(.opacity)
 
-                        DerivationCandidateStage(
-                            phase: phase,
-                            candidates: sequenceCandidates,
-                            finalCandidates: finalCandidates,
-                            calendar: calendar
-                        )
-                        .padding(.horizontal, LayoutMetrics.horizontalPadding)
+            OnboardingResponseBlockStage(
+                phase: phase,
+                slots: derivationSlots,
+                visibleBlockCount: visibleResponseBlockCount,
+                criteria: meeting.derivationCriteria,
+                calendar: calendar
+            )
+            .padding(.horizontal, LayoutMetrics.horizontalPadding)
+            .padding(.top, 34)
 
-                        if phase == .final {
-                            Button {
-                                print("Confirm recommended candidate")
-                            } label: {
-                                Text("추천안으로 확정하기")
-                                    .font(.system(size: 15, weight: .semibold))
-                                    .foregroundStyle(.white)
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: 46)
-                                    .background(Color(uiColor: .systemBlue), in: Capsule())
-                            }
-                            .buttonStyle(.plain)
-                            .padding(.horizontal, LayoutMetrics.horizontalPadding)
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
-                        }
-
-                        Spacer(minLength: 0)
-                    }
-                    .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
-                }
-                .animation(.spring(response: 0.62, dampingFraction: 0.9, blendDuration: 0.06), value: phase)
-            }
+            Spacer(minLength: 0)
         }
         .background(Color(uiColor: .systemBackground))
         .onAppear {
@@ -2053,26 +2178,69 @@ private struct BracketReviewScreen: View {
         .onChange(of: meeting.id) { _, _ in
             startDerivationSequence()
         }
+        .toolbar(.hidden, for: .tabBar)
     }
 
     private func startDerivationSequence() {
-        phase = .preparing
+        setPhase(.preparing)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-            withAnimation(.spring(response: 0.66, dampingFraction: 0.9)) {
-                phase = .filtering
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.7) {
+            setPhase(.filtering)
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6.8) {
+            setPhase(.comparing)
+        }
+    }
+
+    private func setPhase(_ nextPhase: MeetingDerivationPhase) {
+        withAnimation(.spring(response: 0.58, dampingFraction: 0.9)) {
+            phase = nextPhase
+            visibleTitleCharacterCount = 0
+            isDetailVisible = false
+            if nextPhase == .preparing {
+                visibleResponseBlockCount = 0
             }
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.75) {
-            withAnimation(.spring(response: 0.7, dampingFraction: 0.9)) {
-                phase = .comparing
+        let characterCount = nextPhase.onboardingTitle.map { _ in 1 }.count
+
+        for index in 0..<characterCount {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12 + Double(index) * 0.052) {
+                guard phase == nextPhase else {
+                    return
+                }
+
+                withAnimation(.easeOut(duration: 0.28)) {
+                    visibleTitleCharacterCount = index + 1
+                }
             }
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4.45) {
-            withAnimation(.spring(response: 0.72, dampingFraction: 0.88)) {
-                phase = .final
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.26 + Double(characterCount) * 0.052) {
+            guard phase == nextPhase else {
+                return
+            }
+
+            withAnimation(.easeOut(duration: 0.42)) {
+                isDetailVisible = true
+            }
+        }
+
+        if nextPhase == .preparing {
+            let blockCount = derivationSlots.count
+            let blockStartDelay = 0.7 + Double(characterCount) * 0.052
+
+            for index in 0..<blockCount {
+                DispatchQueue.main.asyncAfter(deadline: .now() + blockStartDelay + Double(index) * 0.035) {
+                    guard phase == nextPhase else {
+                        return
+                    }
+
+                    withAnimation(.spring(response: 0.48, dampingFraction: 0.88)) {
+                        visibleResponseBlockCount = index + 1
+                    }
+                }
             }
         }
     }
@@ -2108,6 +2276,476 @@ private enum MeetingDerivationPhase: Int {
         case .final:
             return "시스템 추천안을 확인하고 주최자가 확정합니다"
         }
+    }
+
+    var onboardingTitle: String {
+        switch self {
+        case .preparing:
+            return "회의 시간을 도출할게요"
+        case .filtering:
+            return "선택 기준을 반영할게요"
+        case .comparing:
+            return "불가 후보를 제외할게요"
+        case .final:
+            return "최종 후보를 제안할게요"
+        }
+    }
+
+    var onboardingDetail: String {
+        switch self {
+        case .preparing:
+            return "팀원들이 입력한 시간을 회의 후보로 바꿉니다."
+        case .filtering:
+            return "선호 시간대와 제외 시간을 먼저 반영합니다."
+        case .comparing:
+            return "모두가 참석하기 어려운 시간은 후보에서 제거합니다."
+        case .final:
+            return "남은 후보 중 가장 좋은 시간을 제안합니다."
+        }
+    }
+}
+
+private struct SequentialDerivationTitle: View {
+    let text: String
+    let visibleCharacterCount: Int
+
+    private var characters: [String] {
+        text.map(String.init)
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(characters.enumerated()), id: \.offset) { index, character in
+                Text(character)
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .opacity(index < visibleCharacterCount ? 1 : 0)
+                    .offset(y: index < visibleCharacterCount ? 0 : 7)
+                    .blur(radius: index < visibleCharacterCount ? 0 : 2.5)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(.easeOut(duration: 0.22), value: visibleCharacterCount)
+    }
+}
+
+private struct OnboardingResponseBlockStage: View {
+    let phase: MeetingDerivationPhase
+    let slots: [DerivationResponseSlot]
+    let visibleBlockCount: Int
+    let criteria: DerivationCriteria
+    let calendar: Calendar
+
+    private let columnCount = 5
+    private let columnSpacing: CGFloat = 7
+    private let rowSpacing: CGFloat = 7
+    private let rowHeight: CGFloat = 58
+
+    private var visibleSlots: [DerivationResponseSlot] {
+        slots.enumerated().compactMap { index, slot in
+            index < visibleBlockCount ? slot : nil
+        }
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let columnWidth = max(
+                (proxy.size.width - CGFloat(columnCount - 1) * columnSpacing) / CGFloat(columnCount),
+                0
+            )
+
+            ZStack(alignment: .topLeading) {
+                ForEach(Array(visibleSlots.enumerated()), id: \.element.id) { index, slot in
+                    OnboardingResponseBlockCard(
+                        slot: slot,
+                        width: columnWidth,
+                        rowHeight: rowHeight,
+                        phase: phase,
+                        isDimmed: isDimmed(slot)
+                    )
+                    .position(
+                        x: CGFloat(slot.dayIndex) * (columnWidth + columnSpacing) + columnWidth / 2,
+                        y: CGFloat(slot.rowIndex) * (rowHeight + rowSpacing) + rowHeight / 2
+                    )
+                    .animation(
+                        .spring(response: 0.64, dampingFraction: 0.91)
+                            .delay(Double(index % 5) * 0.025 + Double(index / 5) * 0.04),
+                        value: phase
+                    )
+                }
+            }
+            .frame(width: proxy.size.width, height: stageHeight, alignment: .topLeading)
+        }
+        .frame(height: stageHeight)
+        .animation(.spring(response: 0.68, dampingFraction: 0.9), value: phase)
+    }
+
+    private var stageHeight: CGFloat {
+        let rowCount = max((slots.map(\.rowIndex).max() ?? 0) + 1, 1)
+        return CGFloat(rowCount) * rowHeight + CGFloat(max(rowCount - 1, 0)) * rowSpacing
+    }
+
+    private func isDimmed(_ slot: DerivationResponseSlot) -> Bool {
+        guard phase != .preparing else {
+            return false
+        }
+
+        if criteria.excludes(hour: slot.hour) {
+            return true
+        }
+
+        return phase == .comparing && slot.unavailableCount > 0
+    }
+
+}
+
+private struct OnboardingResponseBlockCard: View {
+    let slot: DerivationResponseSlot
+    let width: CGFloat
+    let rowHeight: CGFloat
+    let phase: MeetingDerivationPhase
+    let isDimmed: Bool
+
+    private var hasUnavailable: Bool {
+        slot.unavailableCount > 0
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 3) {
+                Text(slot.compactDayText(calendar: slot.calendar))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+
+                Spacer(minLength: 0)
+
+                if hasUnavailable && !isDimmed {
+                    Circle()
+                        .fill(Color(uiColor: .systemRed).opacity(0.82))
+                        .frame(width: 5, height: 5)
+                }
+            }
+
+            Text(slot.timeText)
+                .font(.system(size: 12, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+
+            HStack(spacing: 3) {
+                OnboardingCompactCount(label: "가", count: slot.availableCount, color: Color(uiColor: .systemGreen))
+                OnboardingCompactCount(label: "부", count: slot.burdenCount, color: Color(uiColor: .systemOrange))
+                OnboardingCompactCount(label: "불", count: slot.unavailableCount, color: Color(uiColor: .systemRed))
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 6)
+        .frame(width: width, height: rowHeight, alignment: .topLeading)
+        .background(
+            blockBackground,
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(
+                    strokeColor,
+                    lineWidth: strokeLineWidth
+                )
+        }
+        .opacity(isDimmed ? 0.46 : 1)
+        .scaleEffect(isDimmed ? 0.96 : 1)
+    }
+
+    private var blockBackground: Color {
+        if isDimmed {
+            if hasUnavailable {
+                return Color(uiColor: .systemRed).opacity(0.12)
+            }
+
+            return Color(uiColor: .systemBackground).opacity(0.82)
+        }
+
+        if hasUnavailable {
+            return Color(uiColor: .systemRed).opacity(0.075)
+        }
+
+        return Color(uiColor: .secondarySystemBackground).opacity(0.94)
+    }
+
+    private var strokeColor: Color {
+        if isDimmed {
+            if hasUnavailable {
+                return Color(uiColor: .systemRed).opacity(0.2)
+            }
+
+            return Color.white.opacity(0.7)
+        }
+
+        return hasUnavailable ? Color(uiColor: .systemRed).opacity(0.22) : Color(uiColor: .separator).opacity(0.08)
+    }
+
+    private var strokeLineWidth: CGFloat {
+        if isDimmed {
+            return 0.8
+        }
+
+        return hasUnavailable ? 0.9 : 0.7
+    }
+}
+
+private struct DerivationResponseSlot: Identifiable, Hashable {
+    let date: Date
+    let dayIndex: Int
+    let rowIndex: Int
+    let hour: Int
+    let availableCount: Int
+    let burdenCount: Int
+    let unavailableCount: Int
+    let calendar: Calendar
+
+    var id: String {
+        "\(dayIndex)-\(rowIndex)-\(hour)-\(availableCount)-\(burdenCount)-\(unavailableCount)"
+    }
+
+    var mergeSignature: String {
+        "\(availableCount)-\(burdenCount)-\(unavailableCount)"
+    }
+
+    var timeText: String {
+        "\(String(format: "%02d", hour)):00"
+    }
+
+    func compactDayText(calendar: Calendar) -> String {
+        let day = calendar.component(.day, from: date)
+        let symbols = ["일", "월", "화", "수", "목", "금", "토"]
+        let index = max(min(calendar.component(.weekday, from: date) - 1, symbols.count - 1), 0)
+        return "\(symbols[index]) \(day)"
+    }
+
+    static func makeSlots(for meeting: HomeMeeting, calendar: Calendar) -> [DerivationResponseSlot] {
+        let dates = Array(candidateDates(from: meeting.candidateStartDate, to: meeting.candidateEndDate, calendar: calendar).prefix(5))
+        let summaries = TeamResponseSummary.makeSummaries(for: meeting, dates: dates, calendar: calendar)
+        let visibleHours = (9..<18).filter { hour in
+            dates.contains { date in
+                let slot = AvailabilitySlot(date: calendar.startOfDay(for: date), hour: hour)
+                return summaries[slot] != nil
+            }
+        }
+
+        return visibleHours.enumerated().flatMap { rowIndex, hour in
+            dates.enumerated().compactMap { dayIndex, date in
+                let slot = AvailabilitySlot(date: calendar.startOfDay(for: date), hour: hour)
+                guard let summary = summaries[slot] else {
+                    return nil
+                }
+
+                return DerivationResponseSlot(
+                    date: calendar.startOfDay(for: date),
+                    dayIndex: dayIndex,
+                    rowIndex: rowIndex,
+                    hour: hour,
+                    availableCount: summary.availableCount,
+                    burdenCount: summary.burdenCount,
+                    unavailableCount: summary.unavailableCount,
+                    calendar: calendar,
+                )
+            }
+        }
+    }
+
+    private static func candidateDates(from startDate: Date, to endDate: Date, calendar: Calendar) -> [Date] {
+        let start = calendar.startOfDay(for: startDate)
+        let end = calendar.startOfDay(for: endDate)
+
+        guard start <= end else {
+            return [start]
+        }
+
+        var dates: [Date] = []
+        var current = start
+
+        while current <= end {
+            dates.append(current)
+            guard let nextDate = calendar.date(byAdding: .day, value: 1, to: current) else {
+                break
+            }
+            current = nextDate
+        }
+
+        return dates
+    }
+}
+
+private struct DerivationResponseBlock: Identifiable, Hashable {
+    let date: Date
+    let dayIndex: Int
+    let startHour: Int
+    let endHour: Int
+    let availableCount: Int
+    let burdenCount: Int
+    let unavailableCount: Int
+    let calendar: Calendar
+
+    var id: String {
+        "\(dayIndex)-\(startHour)-\(endHour)-\(availableCount)-\(burdenCount)-\(unavailableCount)"
+    }
+
+    var hourSpan: Int {
+        max(endHour - startHour, 1)
+    }
+
+    var timeRangeText: String {
+        if hourSpan == 1 {
+            return "\(String(format: "%02d", startHour)):00"
+        }
+
+        return "\(String(format: "%02d", startHour)):00-\(String(format: "%02d", endHour)):00"
+    }
+
+    init(slot: DerivationResponseSlot) {
+        self.date = slot.date
+        self.dayIndex = slot.dayIndex
+        self.startHour = slot.hour
+        self.endHour = slot.hour + 1
+        self.availableCount = slot.availableCount
+        self.burdenCount = slot.burdenCount
+        self.unavailableCount = slot.unavailableCount
+        self.calendar = slot.calendar
+    }
+
+    init(
+        date: Date,
+        dayIndex: Int,
+        startHour: Int,
+        endHour: Int,
+        availableCount: Int,
+        burdenCount: Int,
+        unavailableCount: Int,
+        calendar: Calendar
+    ) {
+        self.date = date
+        self.dayIndex = dayIndex
+        self.startHour = startHour
+        self.endHour = endHour
+        self.availableCount = availableCount
+        self.burdenCount = burdenCount
+        self.unavailableCount = unavailableCount
+        self.calendar = calendar
+    }
+
+    func compactDayText(calendar: Calendar) -> String {
+        let day = calendar.component(.day, from: date)
+        let symbols = ["일", "월", "화", "수", "목", "금", "토"]
+        let index = max(min(calendar.component(.weekday, from: date) - 1, symbols.count - 1), 0)
+        return "\(symbols[index]) \(day)"
+    }
+
+    static func mergedBlocks(from slots: [DerivationResponseSlot]) -> [DerivationResponseBlock] {
+        Dictionary(grouping: slots, by: \.dayIndex)
+            .flatMap { _, daySlots -> [DerivationResponseBlock] in
+                let sortedSlots = daySlots.sorted { $0.hour < $1.hour }
+                var blocks: [DerivationResponseBlock] = []
+                var currentSlots: [DerivationResponseSlot] = []
+
+                for slot in sortedSlots {
+                    if let previous = currentSlots.last,
+                       previous.hour + 1 == slot.hour,
+                       previous.mergeSignature == slot.mergeSignature {
+                        currentSlots.append(slot)
+                    } else {
+                        if let block = makeBlock(from: currentSlots) {
+                            blocks.append(block)
+                        }
+
+                        currentSlots = [slot]
+                    }
+                }
+
+                if let block = makeBlock(from: currentSlots) {
+                    blocks.append(block)
+                }
+
+                return blocks
+            }
+            .sorted {
+                if $0.startHour == $1.startHour {
+                    return $0.dayIndex < $1.dayIndex
+                }
+
+                return $0.startHour < $1.startHour
+            }
+    }
+
+    static func isBetterCandidate(_ lhs: DerivationResponseBlock, _ rhs: DerivationResponseBlock) -> Bool {
+        let lhsScore = lhs.availableCount * 10 + lhs.hourSpan * 4 - lhs.burdenCount * 3 - abs(lhs.startHour - 14)
+        let rhsScore = rhs.availableCount * 10 + rhs.hourSpan * 4 - rhs.burdenCount * 3 - abs(rhs.startHour - 14)
+
+        if lhsScore == rhsScore {
+            if lhs.burdenCount == rhs.burdenCount {
+                return lhs.startHour < rhs.startHour
+            }
+
+            return lhs.burdenCount < rhs.burdenCount
+        }
+
+        return lhsScore > rhsScore
+    }
+
+    private static func makeBlock(from slots: [DerivationResponseSlot]) -> DerivationResponseBlock? {
+        guard let first = slots.first, let last = slots.last else {
+            return nil
+        }
+
+        return DerivationResponseBlock(
+            date: first.date,
+            dayIndex: first.dayIndex,
+            startHour: first.hour,
+            endHour: last.hour + 1,
+            availableCount: first.availableCount,
+            burdenCount: first.burdenCount,
+            unavailableCount: first.unavailableCount,
+            calendar: first.calendar
+        )
+    }
+}
+
+private struct OnboardingCompactCount: View {
+    let label: String
+    let count: Int
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Text(label)
+            Text("\(count)")
+                .monospacedDigit()
+        }
+        .font(.system(size: 9, weight: .semibold))
+        .foregroundStyle(count > 0 ? color : Color(uiColor: .tertiaryLabel))
+        .lineLimit(1)
+        .minimumScaleFactor(0.7)
+    }
+}
+
+private struct ResponseCountPill: View {
+    let title: String
+    let count: Int
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Text(title)
+            Text("\(count)")
+                .monospacedDigit()
+        }
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(count > 0 ? color : Color(uiColor: .tertiaryLabel))
+        .padding(.horizontal, 7)
+        .frame(height: 24)
+        .background((count > 0 ? color.opacity(0.1) : Color(uiColor: .systemFill).opacity(0.45)), in: Capsule())
     }
 }
 
@@ -2744,6 +3382,12 @@ private struct MeetingDecisionCandidate: Identifiable, Hashable {
         return "\(month)월 \(day)일 \(weekday)"
     }
 
+    func compactDayText(calendar: Calendar) -> String {
+        let day = calendar.component(.day, from: date)
+        let weekday = weekdayText(calendar: calendar)
+        return "\(weekday) \(day)"
+    }
+
     func fullDateText(calendar: Calendar) -> String {
         "\(dayText(calendar: calendar)) \(timeText)"
     }
@@ -2800,6 +3444,37 @@ private struct MeetingDecisionCandidate: Identifiable, Hashable {
 
                 return lhs.score > rhs.score
             }.prefix(2))
+        }
+    }
+
+    static func makeOnboardingGridCandidates(for meeting: HomeMeeting, calendar: Calendar) -> [MeetingDecisionCandidate] {
+        let dates = Array(candidateDates(from: meeting.candidateStartDate, to: meeting.candidateEndDate, calendar: calendar).prefix(5))
+        let requiredTotal = min(max(meeting.memberCount - 2, 1), 4)
+        let optionalTotal = max(meeting.memberCount - requiredTotal, 0)
+
+        return (9..<18).flatMap { hour in
+            dates.enumerated().map { dayIndex, date in
+                let seed = abs(dayIndex * 23 + hour * 17 + meeting.memberCount * 5)
+                let optionalUnavailable = optionalTotal > 0 && (seed % 7 == 0 || seed % 17 == 0) ? 1 : 0
+                let burdenCount = seed % 5 == 0 ? 2 : (seed % 3 == 0 ? 1 : 0)
+                let timePreferencePenalty = abs(hour - 14) * 2
+                let score = max(
+                    56,
+                    100 - optionalUnavailable * 11 - burdenCount * 7 - timePreferencePenalty - dayIndex
+                )
+
+                return MeetingDecisionCandidate(
+                    date: calendar.startOfDay(for: date),
+                    hour: hour,
+                    score: score,
+                    requiredAvailable: requiredTotal,
+                    requiredTotal: requiredTotal,
+                    optionalAvailable: max(optionalTotal - optionalUnavailable, 0),
+                    optionalTotal: optionalTotal,
+                    burdenCount: burdenCount,
+                    unavailableCount: optionalUnavailable
+                )
+            }
         }
     }
 
@@ -7547,6 +8222,8 @@ private struct HomeMeeting: Identifiable {
     let dateRange: String
     let timeRange: String
     let excludedTimeRule: ExcludedTimeRule
+    let derivationCriteria: DerivationCriteria
+    let hostAvailabilityEntries: [AvailabilitySlot: AvailabilityEntry]
     let memberCount: Int
     let respondedCount: Int
     let status: MeetingStatus
@@ -7570,7 +8247,7 @@ private struct HomeMeeting: Identifiable {
         return Double(respondedCount) / Double(memberCount)
     }
 
-    func sharedWithMembers() -> HomeMeeting {
+    func sharedWithMembers(hostAvailabilityEntries: [AvailabilitySlot: AvailabilityEntry]) -> HomeMeeting {
         let normalizedMembers = Self.prototypeSixMembers(from: memberInitials)
 
         return HomeMeeting(
@@ -7581,6 +8258,8 @@ private struct HomeMeeting: Identifiable {
             dateRange: dateRange,
             timeRange: timeRange,
             excludedTimeRule: excludedTimeRule,
+            derivationCriteria: derivationCriteria,
+            hostAvailabilityEntries: hostAvailabilityEntries,
             memberCount: normalizedMembers.count,
             respondedCount: normalizedMembers.count,
             status: .collecting,
@@ -7594,7 +8273,7 @@ private struct HomeMeeting: Identifiable {
         )
     }
 
-    func readyForComparison() -> HomeMeeting {
+    func readyForComparison(criteria: DerivationCriteria) -> HomeMeeting {
         HomeMeeting(
             id: id,
             title: title,
@@ -7603,6 +8282,8 @@ private struct HomeMeeting: Identifiable {
             dateRange: dateRange,
             timeRange: timeRange,
             excludedTimeRule: excludedTimeRule,
+            derivationCriteria: criteria,
+            hostAvailabilityEntries: hostAvailabilityEntries,
             memberCount: memberCount,
             respondedCount: memberCount,
             status: .ready,
@@ -7625,6 +8306,8 @@ private struct HomeMeeting: Identifiable {
             dateRange: "7월 15일 - 18일",
             timeRange: "10:00 - 17:00",
             excludedTimeRule: .lunch,
+            derivationCriteria: .default,
+            hostAvailabilityEntries: [:],
             memberCount: 5,
             respondedCount: 3,
             status: .collecting,
@@ -7644,6 +8327,8 @@ private struct HomeMeeting: Identifiable {
             dateRange: "7월 16일 - 17일",
             timeRange: "14:00 - 16:00",
             excludedTimeRule: .lunch,
+            derivationCriteria: .default,
+            hostAvailabilityEntries: [:],
             memberCount: 4,
             respondedCount: 4,
             status: .ready,
@@ -7663,6 +8348,8 @@ private struct HomeMeeting: Identifiable {
             dateRange: "7월 21일 - 22일",
             timeRange: "09:00 - 12:00",
             excludedTimeRule: .lunch,
+            derivationCriteria: .default,
+            hostAvailabilityEntries: [:],
             memberCount: 6,
             respondedCount: 2,
             status: .waiting,
@@ -7682,6 +8369,8 @@ private struct HomeMeeting: Identifiable {
             dateRange: "7월 14일",
             timeRange: "11:00 - 12:00",
             excludedTimeRule: .lunch,
+            derivationCriteria: .default,
+            hostAvailabilityEntries: [:],
             memberCount: 3,
             respondedCount: 3,
             status: .confirmed,
@@ -9247,6 +9936,72 @@ private struct TeamResponseSummary: Equatable {
 
     var stroke: Color {
         tint.opacity(0.24)
+    }
+
+    static func makeSummaries(for meeting: HomeMeeting, dates: [Date], calendar: Calendar) -> [AvailabilitySlot: TeamResponseSummary] {
+        let fallbackNames = ["나", "김민준", "이서연", "오유진", "송승아", "박도윤"]
+        let memberNames = meeting.memberInitials.isEmpty ? fallbackNames : meeting.memberInitials
+        let normalizedNames = (0..<max(meeting.memberCount, memberNames.count)).map { index in
+            index < memberNames.count ? memberNames[index] : "팀원 \(index)"
+        }
+        let burdenReasons = ["앞 일정과 붙어 있음", "이동 시간이 필요함", "준비 시간이 부족함"]
+        let unavailableReasons = ["이미 확정된 회의", "외부 미팅", "개인 일정"]
+        var summaries: [AvailabilitySlot: TeamResponseSummary] = [:]
+
+        for (dayIndex, date) in dates.enumerated() {
+            for hour in 9..<18 {
+                let slot = AvailabilitySlot(date: calendar.startOfDay(for: date), hour: hour)
+                guard !meeting.excludedTimeRule.excludes(hour: hour, date: date, calendar: calendar) else {
+                    continue
+                }
+
+                var available: [String] = []
+                var burden: [TeamResponseReason] = []
+                var unavailable: [TeamResponseReason] = []
+
+                for (memberIndex, name) in normalizedNames.enumerated() {
+                    if memberIndex == 0, let hostEntry = meeting.hostAvailabilityEntries[slot] {
+                        switch hostEntry.mode {
+                        case .available:
+                            available.append(name)
+                        case .burden:
+                            burden.append(TeamResponseReason(name: name, reason: hostEntry.reason ?? "조정 가능"))
+                        case .unavailable:
+                            unavailable.append(TeamResponseReason(name: name, reason: hostEntry.reason ?? "참석 어려움"))
+                        }
+                        continue
+                    }
+
+                    let seed = dayIndex * 11 + hour + memberIndex * 3
+
+                    if seed % 9 == 0 {
+                        unavailable.append(
+                            TeamResponseReason(
+                                name: name,
+                                reason: unavailableReasons[seed % unavailableReasons.count]
+                            )
+                        )
+                    } else if seed % 5 == 0 {
+                        burden.append(
+                            TeamResponseReason(
+                                name: name,
+                                reason: burdenReasons[seed % burdenReasons.count]
+                            )
+                        )
+                    } else {
+                        available.append(name)
+                    }
+                }
+
+                summaries[slot] = TeamResponseSummary(
+                    availableNames: available,
+                    burdenMembers: burden,
+                    unavailableMembers: unavailable
+                )
+            }
+        }
+
+        return summaries
     }
 }
 
