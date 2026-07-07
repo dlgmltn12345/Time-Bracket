@@ -161,6 +161,9 @@ struct ContentView: View {
             status: .waiting,
             stage: .hostAvailability,
             memberInitials: ["나"] + draft.members.map(\.name),
+            requiredMemberIndexes: Set([0] + draft.members.enumerated().compactMap { index, member in
+                member.isRequired ? index + 1 : nil
+            }),
             focusDate: focusDate,
             candidateStartDate: draft.startDate,
             candidateEndDate: draft.endDate,
@@ -2105,11 +2108,36 @@ private struct BracketReviewScreen: View {
     @State private var visibleTitleCharacterCount = 0
     @State private var isDetailVisible = false
     @State private var visibleResponseBlockCount = 0
+    @State private var areCriteriaExcludedSlotsHidden = false
+    @State private var areUnavailableSlotsHidden = false
+    @State private var areBurdenHeavySlotsHidden = false
+    @State private var areLowAvailabilitySlotsHidden = false
+    @State private var areNonFinalSlotsHidden = false
+    @State private var selectedFinalCandidateID: String?
+    @State private var isEliminatedCandidatesPresented = false
 
     private var calendar: Calendar {
         var calendar = Calendar.current
         calendar.locale = Locale(identifier: "ko_KR")
         return calendar
+    }
+
+    private enum Timing {
+        static let phaseFilteringDelay = 4.8
+        static let phaseComparingDelay = 9.1
+        static let phaseBurdenDelay = 13.5
+        static let phaseAvailabilityDelay = 17.9
+        static let phaseFinalDelay = 22.4
+        static let titleInitialDelay = 0.18
+        static let titleCharacterInterval = 0.068
+        static let titleCharacterAnimation = 0.34
+        static let detailDelay = 0.38
+        static let detailAnimation = 0.52
+        static let blockInitialDelay = 1.08
+        static let blockInterval = 0.052
+        static let blockAnimationResponse = 0.58
+        static let eliminationDelay = 1.65
+        static let eliminationAnimationResponse = 0.78
     }
 
     private var candidates: [MeetingDecisionCandidate] {
@@ -2138,16 +2166,153 @@ private struct BracketReviewScreen: View {
         DerivationResponseSlot.makeSlots(for: meeting, calendar: calendar)
     }
 
+    private var criteriaReadySlots: [DerivationResponseSlot] {
+        derivationSlots.filter { !meeting.derivationCriteria.excludes(hour: $0.hour) }
+    }
+
+    private var availableCandidateSlots: [DerivationResponseSlot] {
+        criteriaReadySlots.filter { $0.requiredUnavailableCount == 0 }
+    }
+
+    private var burdenExclusionThreshold: Int? {
+        let maxBurden = availableCandidateSlots.map(\.weightedBurdenScore).max() ?? 0
+        return maxBurden > 0 ? maxBurden : nil
+    }
+
+    private var burdenReadySlots: [DerivationResponseSlot] {
+        guard let burdenExclusionThreshold else {
+            return availableCandidateSlots
+        }
+
+        return availableCandidateSlots.filter { $0.weightedBurdenScore < burdenExclusionThreshold }
+    }
+
+    private var minimumPreferredAvailableCount: Int? {
+        let availableCounts = burdenReadySlots.map(\.availableCount)
+        guard let maxAvailable = availableCounts.max(),
+              let minAvailable = availableCounts.min(),
+              maxAvailable > minAvailable else {
+            return nil
+        }
+
+        return maxAvailable
+    }
+
+    private var highAvailabilitySlots: [DerivationResponseSlot] {
+        guard let minimumPreferredAvailableCount else {
+            return burdenReadySlots
+        }
+
+        return burdenReadySlots.filter { $0.availableCount >= minimumPreferredAvailableCount }
+    }
+
+    private var finalDerivationSlotIDs: Set<String> {
+        Set(finalDerivationSlots.map(\.id))
+    }
+
+    private var finalDerivationSlots: [DerivationResponseSlot] {
+        let sourceSlots: [DerivationResponseSlot]
+
+        if !highAvailabilitySlots.isEmpty {
+            sourceSlots = highAvailabilitySlots
+        } else if !burdenReadySlots.isEmpty {
+            sourceSlots = burdenReadySlots
+        } else if !availableCandidateSlots.isEmpty {
+            sourceSlots = availableCandidateSlots
+        } else {
+            sourceSlots = criteriaReadySlots
+        }
+
+        return Array(sourceSlots.sorted(by: isBetterDerivationSlot).prefix(2))
+    }
+
+    private var responseSummaries: [AvailabilitySlot: TeamResponseSummary] {
+        let dates = Array(Set(derivationSlots.map(\.date))).sorted()
+        return TeamResponseSummary.makeSummaries(for: meeting, dates: dates, calendar: calendar)
+    }
+
+    private var finalDerivationCandidates: [FinalDerivationCandidate] {
+        finalDerivationSlots.enumerated().compactMap { index, slot in
+            let availabilitySlot = AvailabilitySlot(date: calendar.startOfDay(for: slot.date), hour: slot.hour)
+            guard let summary = responseSummaries[availabilitySlot] else {
+                return nil
+            }
+
+            return FinalDerivationCandidate(
+                rank: index,
+                slot: slot,
+                summary: summary,
+                score: score(for: slot)
+            )
+        }
+    }
+
+    private var eliminatedCandidateGroups: [EliminatedCandidateGroup] {
+        var groups: [EliminatedCandidateGroup] = []
+
+        let criteriaExcludedSlots = derivationSlots.filter { meeting.derivationCriteria.excludes(hour: $0.hour) }
+        if !criteriaExcludedSlots.isEmpty {
+            groups.append(
+                EliminatedCandidateGroup(
+                    title: "선택 기준으로 제외",
+                    detail: "주최자가 제외한 시간대입니다.",
+                    tint: Color(uiColor: .systemGray),
+                    slots: criteriaExcludedSlots
+                )
+            )
+        }
+
+        let requiredUnavailableSlots = criteriaReadySlots.filter { $0.requiredUnavailableCount > 0 }
+        if !requiredUnavailableSlots.isEmpty {
+            groups.append(
+                EliminatedCandidateGroup(
+                    title: "필참 불가",
+                    detail: "필참자가 참석하기 어려운 시간입니다.",
+                    tint: Color(uiColor: .systemRed),
+                    slots: requiredUnavailableSlots
+                )
+            )
+        }
+
+        if let burdenExclusionThreshold {
+            let burdenHeavySlots = availableCandidateSlots.filter { $0.weightedBurdenScore >= burdenExclusionThreshold }
+            if !burdenHeavySlots.isEmpty {
+                groups.append(
+                    EliminatedCandidateGroup(
+                        title: "부담 높음",
+                    detail: "일정/이동처럼 리스크가 큰 부담이 있는 시간입니다.",
+                        tint: Color(uiColor: .systemOrange),
+                        slots: burdenHeavySlots
+                    )
+                )
+            }
+        }
+
+        if let minimumPreferredAvailableCount {
+            let lowAvailabilitySlots = burdenReadySlots.filter { $0.availableCount < minimumPreferredAvailableCount }
+            if !lowAvailabilitySlots.isEmpty {
+                groups.append(
+                    EliminatedCandidateGroup(
+                        title: "참여율 낮음",
+                        detail: "다른 후보보다 가능 인원이 적은 시간입니다.",
+                        tint: Color(uiColor: .systemBlue),
+                        slots: lowAvailabilitySlots
+                    )
+                )
+            }
+        }
+
+        return groups
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Spacer()
-                .frame(height: 42)
-
             SequentialDerivationTitle(
                 text: phase.onboardingTitle,
                 visibleCharacterCount: visibleTitleCharacterCount
             )
             .padding(.horizontal, LayoutMetrics.horizontalPadding)
+            .padding(.top, 12)
 
             Text(phase.onboardingDetail)
                 .font(.system(size: 15, weight: .medium))
@@ -2159,19 +2324,62 @@ private struct BracketReviewScreen: View {
                 .animation(.easeOut(duration: 0.32), value: isDetailVisible)
                 .contentTransition(.opacity)
 
-            OnboardingResponseBlockStage(
-                phase: phase,
-                slots: derivationSlots,
-                visibleBlockCount: visibleResponseBlockCount,
-                criteria: meeting.derivationCriteria,
-                calendar: calendar
+            DerivationPhaseChipRow(
+                chips: phaseChips,
+                isVisible: isDetailVisible
             )
             .padding(.horizontal, LayoutMetrics.horizontalPadding)
-            .padding(.top, 34)
+            .padding(.top, 14)
+
+            if phase == .final && areNonFinalSlotsHidden {
+                FinalCandidateComparisonView(
+                    candidates: finalDerivationCandidates,
+                    selectedCandidateID: $selectedFinalCandidateID,
+                    calendar: calendar,
+                    onShowEliminated: {
+                        isEliminatedCandidatesPresented = true
+                    },
+                    onRestart: {
+                        print("Restart derivation")
+                    }
+                )
+                .padding(.top, 24)
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .move(edge: .bottom)),
+                    removal: .opacity
+                ))
+            } else {
+                OnboardingResponseBlockStage(
+                    phase: phase,
+                    slots: derivationSlots,
+                    visibleBlockCount: visibleResponseBlockCount,
+                    criteria: meeting.derivationCriteria,
+                    hidesCriteriaExcludedSlots: areCriteriaExcludedSlotsHidden,
+                    hidesUnavailableSlots: areUnavailableSlotsHidden,
+                    hidesBurdenHeavySlots: areBurdenHeavySlotsHidden,
+                    hidesLowAvailabilitySlots: areLowAvailabilitySlotsHidden,
+                    hidesNonFinalSlots: areNonFinalSlotsHidden,
+                    burdenExclusionThreshold: burdenExclusionThreshold,
+                    minimumPreferredAvailableCount: minimumPreferredAvailableCount,
+                    finalSlotIDs: finalDerivationSlotIDs,
+                    calendar: calendar
+                )
+                .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                .padding(.top, 26)
+                .transition(.opacity)
+            }
 
             Spacer(minLength: 0)
         }
         .background(Color(uiColor: .systemBackground))
+        .sheet(isPresented: $isEliminatedCandidatesPresented) {
+            EliminatedCandidatesSheet(
+                groups: eliminatedCandidateGroups,
+                calendar: calendar
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
         .onAppear {
             startDerivationSequence()
         }
@@ -2184,12 +2392,24 @@ private struct BracketReviewScreen: View {
     private func startDerivationSequence() {
         setPhase(.preparing)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.7) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + Timing.phaseFilteringDelay) {
             setPhase(.filtering)
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 6.8) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + Timing.phaseComparingDelay) {
             setPhase(.comparing)
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + Timing.phaseBurdenDelay) {
+            setPhase(.burden)
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + Timing.phaseAvailabilityDelay) {
+            setPhase(.availability)
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + Timing.phaseFinalDelay) {
+            setPhase(.final)
         }
     }
 
@@ -2200,49 +2420,236 @@ private struct BracketReviewScreen: View {
             isDetailVisible = false
             if nextPhase == .preparing {
                 visibleResponseBlockCount = 0
+                areCriteriaExcludedSlotsHidden = false
+                areUnavailableSlotsHidden = false
+                areBurdenHeavySlotsHidden = false
+                areLowAvailabilitySlotsHidden = false
+                areNonFinalSlotsHidden = false
             }
         }
 
         let characterCount = nextPhase.onboardingTitle.map { _ in 1 }.count
 
         for index in 0..<characterCount {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12 + Double(index) * 0.052) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Timing.titleInitialDelay + Double(index) * Timing.titleCharacterInterval) {
                 guard phase == nextPhase else {
                     return
                 }
 
-                withAnimation(.easeOut(duration: 0.28)) {
+                withAnimation(.easeOut(duration: Timing.titleCharacterAnimation)) {
                     visibleTitleCharacterCount = index + 1
                 }
             }
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.26 + Double(characterCount) * 0.052) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + Timing.detailDelay + Double(characterCount) * Timing.titleCharacterInterval) {
             guard phase == nextPhase else {
                 return
             }
 
-            withAnimation(.easeOut(duration: 0.42)) {
+            withAnimation(.easeOut(duration: Timing.detailAnimation)) {
                 isDetailVisible = true
             }
         }
 
         if nextPhase == .preparing {
             let blockCount = derivationSlots.count
-            let blockStartDelay = 0.7 + Double(characterCount) * 0.052
+            let blockStartDelay = Timing.blockInitialDelay + Double(characterCount) * Timing.titleCharacterInterval
 
             for index in 0..<blockCount {
-                DispatchQueue.main.asyncAfter(deadline: .now() + blockStartDelay + Double(index) * 0.035) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + blockStartDelay + Double(index) * Timing.blockInterval) {
                     guard phase == nextPhase else {
                         return
                     }
 
-                    withAnimation(.spring(response: 0.48, dampingFraction: 0.88)) {
+                    withAnimation(.spring(response: Timing.blockAnimationResponse, dampingFraction: 0.88)) {
                         visibleResponseBlockCount = index + 1
                     }
                 }
             }
         }
+
+        if nextPhase == .filtering {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Timing.eliminationDelay) {
+                guard phase == nextPhase else {
+                    return
+                }
+
+                withAnimation(.spring(response: Timing.eliminationAnimationResponse, dampingFraction: 0.9)) {
+                    areCriteriaExcludedSlotsHidden = true
+                }
+            }
+        }
+
+        if nextPhase == .comparing {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Timing.eliminationDelay) {
+                guard phase == nextPhase else {
+                    return
+                }
+
+                withAnimation(.spring(response: Timing.eliminationAnimationResponse, dampingFraction: 0.9)) {
+                    areUnavailableSlotsHidden = true
+                }
+            }
+        }
+
+        if nextPhase == .burden {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Timing.eliminationDelay) {
+                guard phase == nextPhase else {
+                    return
+                }
+
+                withAnimation(.spring(response: Timing.eliminationAnimationResponse, dampingFraction: 0.9)) {
+                    areBurdenHeavySlotsHidden = true
+                }
+            }
+        }
+
+        if nextPhase == .availability {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Timing.eliminationDelay) {
+                guard phase == nextPhase else {
+                    return
+                }
+
+                withAnimation(.spring(response: Timing.eliminationAnimationResponse, dampingFraction: 0.9)) {
+                    areLowAvailabilitySlotsHidden = true
+                }
+            }
+        }
+
+        if nextPhase == .final {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Timing.eliminationDelay) {
+                guard phase == nextPhase else {
+                    return
+                }
+
+                withAnimation(.spring(response: Timing.eliminationAnimationResponse, dampingFraction: 0.9)) {
+                    areNonFinalSlotsHidden = true
+                }
+            }
+        }
+    }
+
+    private var phaseChips: [DerivationPhaseChip] {
+        switch phase {
+        case .preparing:
+            return [
+                DerivationPhaseChip(title: "응답 \(meeting.respondedCount)/\(meeting.memberCount)", symbolName: "checkmark.circle.fill", color: Color(uiColor: .systemGreen)),
+                DerivationPhaseChip(title: "후보 \(derivationSlots.count)개", symbolName: "square.grid.3x3.fill", color: Color(uiColor: .systemBlue))
+            ]
+        case .filtering:
+            return filteringChips
+        case .comparing:
+            return [
+                DerivationPhaseChip(title: "필참 불가 제외", symbolName: "person.crop.circle.badge.xmark.fill", color: Color(uiColor: .systemRed)),
+                DerivationPhaseChip(title: "선택 불가 감점", symbolName: "minus.circle.fill", color: Color(uiColor: .systemOrange))
+            ]
+        case .burden:
+            return [
+                DerivationPhaseChip(title: burdenThresholdText, symbolName: "exclamationmark.triangle.fill", color: Color(uiColor: .systemOrange)),
+                DerivationPhaseChip(title: "부담 낮은 시간", symbolName: "arrow.down.heart.fill", color: Color(uiColor: .systemOrange))
+            ]
+        case .availability:
+            return [
+                DerivationPhaseChip(title: availabilityThresholdText, symbolName: "person.2.fill", color: Color(uiColor: .systemGreen)),
+                DerivationPhaseChip(title: "가능 인원 우선", symbolName: "checkmark.circle.fill", color: Color(uiColor: .systemGreen))
+            ]
+        case .final:
+            return [
+                DerivationPhaseChip(title: "최종 2안", symbolName: "sparkles", color: Color(uiColor: .systemBlue)),
+                DerivationPhaseChip(title: meeting.derivationCriteria.priority.title, symbolName: "slider.horizontal.3", color: Color(uiColor: .systemIndigo))
+            ]
+        }
+    }
+
+    private var filteringChips: [DerivationPhaseChip] {
+        var chips: [DerivationPhaseChip] = []
+
+        if meeting.excludedTimeRule.isEnabled {
+            chips.append(
+                DerivationPhaseChip(
+                    title: meeting.excludedTimeRule.title,
+                    symbolName: "clock.badge.xmark.fill",
+                    color: Color(uiColor: .systemGray)
+                )
+            )
+        }
+
+        if meeting.derivationCriteria.timePreference != .any {
+            chips.append(
+                DerivationPhaseChip(
+                    title: meeting.derivationCriteria.timePreference.title,
+                    symbolName: "clock.fill",
+                    color: Color(uiColor: .systemBlue)
+                )
+            )
+        }
+
+        if meeting.derivationCriteria.avoidsAfterLunch {
+            chips.append(DerivationPhaseChip(title: "점심 직후 제외", symbolName: "fork.knife", color: Color(uiColor: .systemOrange)))
+        }
+
+        if meeting.derivationCriteria.avoidsNearLeaving {
+            chips.append(DerivationPhaseChip(title: "퇴근 직전 제외", symbolName: "moon.zzz.fill", color: Color(uiColor: .systemIndigo)))
+        }
+
+        if meeting.derivationCriteria.avoidsEarlyMorning {
+            chips.append(DerivationPhaseChip(title: "첫 시간 제외", symbolName: "sunrise.fill", color: Color(uiColor: .systemYellow)))
+        }
+
+        if chips.isEmpty {
+            chips.append(DerivationPhaseChip(title: "기본 기준", symbolName: "slider.horizontal.3", color: Color(uiColor: .systemBlue)))
+        }
+
+        return Array(chips.prefix(3))
+    }
+
+    private var unavailableSlotCount: Int {
+        derivationSlots.filter { $0.requiredUnavailableCount > 0 }.count
+    }
+
+    private var burdenThresholdText: String {
+        guard let burdenExclusionThreshold else {
+            return "부담 없음"
+        }
+
+        return "부담 리스크 \(burdenExclusionThreshold) 이상 제외"
+    }
+
+    private var availabilityThresholdText: String {
+        guard let minimumPreferredAvailableCount else {
+            return "가능 인원 동일"
+        }
+
+        return "가능 \(minimumPreferredAvailableCount)명 우선"
+    }
+
+    private func isBetterDerivationSlot(_ lhs: DerivationResponseSlot, _ rhs: DerivationResponseSlot) -> Bool {
+        let lhsScore = score(for: lhs)
+        let rhsScore = score(for: rhs)
+
+        if lhsScore == rhsScore {
+            if lhs.hour == rhs.hour {
+                return lhs.dayIndex < rhs.dayIndex
+            }
+
+            return lhs.hour < rhs.hour
+        }
+
+        return lhsScore > rhsScore
+    }
+
+    private func score(for slot: DerivationResponseSlot) -> Int {
+        let timePenalty = meeting.derivationCriteria.timePreferencePenalty(for: slot.hour)
+        return max(
+            0,
+            slot.availableCount * 12 -
+                slot.optionalUnavailableCount * 9 -
+                slot.weightedBurdenScore * 4 -
+                timePenalty -
+                abs(slot.hour - 14) * 2 -
+                slot.dayIndex
+        )
     }
 }
 
@@ -2250,6 +2657,8 @@ private enum MeetingDerivationPhase: Int {
     case preparing
     case filtering
     case comparing
+    case burden
+    case availability
     case final
 
     var title: String {
@@ -2259,7 +2668,11 @@ private enum MeetingDerivationPhase: Int {
         case .filtering:
             return "불가 시간이 있는 후보를 제외 중"
         case .comparing:
-            return "부담이 적은 시간을 비교 중"
+            return "불가 후보를 제외 중"
+        case .burden:
+            return "부담이 큰 시간을 줄이는 중"
+        case .availability:
+            return "가능 인원이 많은 시간을 남기는 중"
         case .final:
             return "최종 후보 2개가 남았어요"
         }
@@ -2272,7 +2685,11 @@ private enum MeetingDerivationPhase: Int {
         case .filtering:
             return "필참 조건과 불가 응답을 먼저 확인합니다"
         case .comparing:
-            return "가능 인원, 부담 수, 시간 선호를 함께 계산합니다"
+            return "모두 참석하기 어려운 시간을 먼저 걷어냅니다"
+        case .burden:
+            return "참석은 가능하지만 부담이 큰 시간은 뒤로 미룹니다"
+        case .availability:
+            return "부담 없이 가능한 팀원이 많은 시간을 우선합니다"
         case .final:
             return "시스템 추천안을 확인하고 주최자가 확정합니다"
         }
@@ -2286,6 +2703,10 @@ private enum MeetingDerivationPhase: Int {
             return "선택 기준을 반영할게요"
         case .comparing:
             return "불가 후보를 제외할게요"
+        case .burden:
+            return "부담이 큰 시간을 줄일게요"
+        case .availability:
+            return "가능 인원이 많은 시간을 남길게요"
         case .final:
             return "최종 후보를 제안할게요"
         }
@@ -2299,9 +2720,454 @@ private enum MeetingDerivationPhase: Int {
             return "선호 시간대와 제외 시간을 먼저 반영합니다."
         case .comparing:
             return "모두가 참석하기 어려운 시간은 후보에서 제거합니다."
+        case .burden:
+            return "불가는 아니지만 부담이 큰 시간은 우선순위를 낮춥니다."
+        case .availability:
+            return "남은 후보 중 부담 없이 가능한 인원이 많은 시간을 남깁니다."
         case .final:
             return "남은 후보 중 가장 좋은 시간을 제안합니다."
         }
+    }
+}
+
+private struct DerivationPhaseChip: Identifiable {
+    let title: String
+    let symbolName: String
+    let color: Color
+
+    var id: String {
+        "\(title)-\(symbolName)"
+    }
+}
+
+private struct DerivationPhaseChipRow: View {
+    let chips: [DerivationPhaseChip]
+    let isVisible: Bool
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 7) {
+                ForEach(Array(chips.enumerated()), id: \.element.id) { index, chip in
+                    DerivationPhaseChipView(chip: chip)
+                        .opacity(isVisible ? 1 : 0)
+                        .offset(y: isVisible ? 0 : 7)
+                        .animation(
+                            .easeOut(duration: 0.28)
+                                .delay(Double(index) * 0.045),
+                            value: isVisible
+                        )
+                }
+            }
+            .padding(.vertical, 1)
+        }
+        .contentMargins(.horizontal, 0, for: .scrollContent)
+        .scrollClipDisabled()
+        .id(chips.map(\.title).joined(separator: "|"))
+        .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+}
+
+private struct DerivationPhaseChipView: View {
+    let chip: DerivationPhaseChip
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: chip.symbolName)
+                .font(.system(size: 10, weight: .bold))
+                .symbolRenderingMode(.hierarchical)
+
+            Text(chip.title)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+        }
+        .foregroundStyle(chip.color)
+        .padding(.horizontal, 9)
+        .frame(height: 28)
+        .background(chip.color.opacity(0.1), in: Capsule())
+        .overlay {
+            Capsule()
+                .stroke(chip.color.opacity(0.12), lineWidth: 0.7)
+        }
+    }
+}
+
+private struct FinalDerivationCandidate: Identifiable {
+    let rank: Int
+    let slot: DerivationResponseSlot
+    let summary: TeamResponseSummary
+    let score: Int
+
+    var id: String {
+        slot.id
+    }
+
+    var attendeeNames: [String] {
+        Array((summary.availableNames + summary.burdenMembers.map(\.name)).prefix(6))
+    }
+}
+
+private struct EliminatedCandidateGroup: Identifiable {
+    let title: String
+    let detail: String
+    let tint: Color
+    let slots: [DerivationResponseSlot]
+
+    var id: String {
+        title
+    }
+}
+
+private struct FinalCandidateComparisonView: View {
+    let candidates: [FinalDerivationCandidate]
+    @Binding var selectedCandidateID: String?
+    let calendar: Calendar
+    let onShowEliminated: () -> Void
+    let onRestart: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 10) {
+                ForEach(Array(candidates.prefix(2).enumerated()), id: \.element.id) { index, candidate in
+                    FinalCandidateDetailCard(
+                        candidate: candidate,
+                        calendar: calendar,
+                        isSelected: selectedCandidateID == candidate.id,
+                        onSelect: {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+                                selectedCandidateID = candidate.id
+                            }
+                        }
+                    )
+                    .frame(maxWidth: .infinity)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                    .animation(
+                        .spring(response: 0.52, dampingFraction: 0.9)
+                            .delay(Double(index) * 0.08),
+                        value: candidates.map(\.id)
+                    )
+                }
+            }
+            .padding(.horizontal, LayoutMetrics.horizontalPadding)
+            .padding(.vertical, 2)
+
+            HStack(spacing: 10) {
+                Button(action: onShowEliminated) {
+                    Label("제외된 일정", systemImage: "line.3.horizontal.decrease.circle")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color(uiColor: .systemBlue))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 42)
+                        .background(Color(uiColor: .systemBlue).opacity(0.1), in: Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button(action: onRestart) {
+                    Label("다시하기", systemImage: "arrow.counterclockwise")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 42)
+                        .background(Color(uiColor: .secondarySystemBackground), in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, LayoutMetrics.horizontalPadding)
+        }
+    }
+}
+
+private struct FinalCandidateDetailCard: View {
+    let candidate: FinalDerivationCandidate
+    let calendar: Calendar
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    private var tint: Color {
+        candidate.rank == 0 ? Color(uiColor: .systemBlue) : Color(uiColor: .systemIndigo)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center) {
+                Text(candidate.rank == 0 ? "추천안" : "대안")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .padding(.horizontal, 8)
+                    .frame(height: 25)
+                    .background(tint.opacity(0.1), in: Capsule())
+
+                Spacer(minLength: 0)
+
+                Text("\(candidate.score)")
+                    .font(.system(size: 12, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(candidate.slot.fullDateText(calendar: calendar))
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.78)
+
+                Text(candidate.slot.timeRangeText)
+                    .font(.system(size: 13, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 7) {
+                    AvatarStack(names: candidate.attendeeNames, maxVisible: 3)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("참석 가능")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.primary)
+
+                        Text("\(candidate.summary.availableCount + candidate.summary.burdenCount)명")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 5) {
+                    FinalCandidateMetricPill(
+                        text: candidate.summary.requiredParticipationText,
+                        tint: Color(uiColor: .systemGreen)
+                    )
+                    FinalCandidateMetricPill(
+                        text: candidate.summary.optionalParticipationText,
+                        tint: Color(uiColor: .systemBlue)
+                    )
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 5) {
+                    Text("부담")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+
+                    Spacer(minLength: 0)
+                }
+
+                if candidate.summary.burdenCategorySummaries.isEmpty {
+                    Text("부담 응답 없이 참석 가능한 시간입니다.")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(9)
+                        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                } else {
+                    FinalBurdenCategoryPillRow(summaries: candidate.summary.burdenCategorySummaries)
+
+                    ForEach(candidate.summary.burdenMembers.prefix(1)) { member in
+                        FinalCandidateReasonRow(
+                            member: member,
+                            tint: member.category.color
+                        )
+                    }
+                }
+            }
+
+            Button(action: onSelect) {
+                Text(isSelected ? "선택됨" : "이 시간 선택")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(isSelected ? Color(uiColor: .systemBlue) : .white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 38)
+                    .background(
+                        isSelected ? Color(uiColor: .systemBlue).opacity(0.12) : Color(uiColor: .systemBlue),
+                        in: Capsule()
+                    )
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(isSelected ? Color(uiColor: .systemBlue).opacity(0.36) : Color(uiColor: .separator).opacity(0.08), lineWidth: isSelected ? 1.2 : 0.7)
+        }
+        .scaleEffect(isSelected ? 0.985 : 1)
+    }
+}
+
+private struct FinalCandidateMetricPill: View {
+    let text: String
+    let tint: Color
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 8)
+            .frame(height: 25)
+            .background(tint.opacity(0.1), in: Capsule())
+    }
+}
+
+private struct FinalBurdenCategoryPillRow: View {
+    let summaries: [BurdenCategorySummary]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(summaries.prefix(2)) { summary in
+                HStack(spacing: 4) {
+                    Image(systemName: summary.category.symbolName)
+                        .font(.system(size: 9, weight: .bold))
+                        .symbolRenderingMode(.hierarchical)
+
+                    Text("\(summary.category.title) \(summary.count)")
+                        .font(.system(size: 11, weight: .semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                .foregroundStyle(summary.category.color)
+                .padding(.horizontal, 8)
+                .frame(height: 25)
+                .background(summary.category.color.opacity(0.1), in: Capsule())
+            }
+        }
+    }
+}
+
+private struct FinalCandidateReasonRow: View {
+    let member: TeamResponseReason
+    let tint: Color
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ProfileAvatar(
+                name: member.name,
+                fallback: ProfileAsset.fallbackText(for: member.name),
+                size: 26,
+                tint: tint
+            )
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(member.name)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                Text(member.reason)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(8)
+        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct EliminatedCandidatesSheet: View {
+    let groups: [EliminatedCandidateGroup]
+    let calendar: Calendar
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(groups) { group in
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(alignment: .firstTextBaseline) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(group.title)
+                                        .font(.system(size: 16, weight: .semibold))
+                                        .foregroundStyle(.primary)
+
+                                    Text(group.detail)
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                Spacer()
+
+                                Text("\(group.slots.count)")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(group.tint)
+                                    .padding(.horizontal, 9)
+                                    .frame(height: 26)
+                                    .background(group.tint.opacity(0.1), in: Capsule())
+                            }
+
+                            ForEach(group.slots.sorted(by: eliminatedSlotSort).prefix(5)) { slot in
+                                EliminatedCandidateRow(
+                                    slot: slot,
+                                    tint: group.tint,
+                                    calendar: calendar
+                                )
+                            }
+                        }
+                        .padding(14)
+                        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    }
+                }
+                .padding(LayoutMetrics.horizontalPadding)
+            }
+            .background(Color(uiColor: .systemBackground))
+            .navigationTitle("제외된 일정")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("완료") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    private func eliminatedSlotSort(_ lhs: DerivationResponseSlot, _ rhs: DerivationResponseSlot) -> Bool {
+        let lhsScore = lhs.availableCount * 12 - lhs.optionalUnavailableCount * 9 - lhs.burdenCount * 6 - abs(lhs.hour - 14) * 2 - lhs.dayIndex
+        let rhsScore = rhs.availableCount * 12 - rhs.optionalUnavailableCount * 9 - rhs.burdenCount * 6 - abs(rhs.hour - 14) * 2 - rhs.dayIndex
+
+        if lhsScore == rhsScore {
+            return lhs.hour < rhs.hour
+        }
+
+        return lhsScore > rhsScore
+    }
+}
+
+private struct EliminatedCandidateRow: View {
+    let slot: DerivationResponseSlot
+    let tint: Color
+    let calendar: Calendar
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(slot.fullDateText(calendar: calendar))
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                Text(slot.timeRangeText)
+                    .font(.system(size: 12, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 0)
+
+            Text("후보군에 올리기")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(tint)
+                .padding(.horizontal, 9)
+                .frame(height: 28)
+                .background(tint.opacity(0.1), in: Capsule())
+        }
+        .padding(12)
+        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 
@@ -2334,6 +3200,14 @@ private struct OnboardingResponseBlockStage: View {
     let slots: [DerivationResponseSlot]
     let visibleBlockCount: Int
     let criteria: DerivationCriteria
+    let hidesCriteriaExcludedSlots: Bool
+    let hidesUnavailableSlots: Bool
+    let hidesBurdenHeavySlots: Bool
+    let hidesLowAvailabilitySlots: Bool
+    let hidesNonFinalSlots: Bool
+    let burdenExclusionThreshold: Int?
+    let minimumPreferredAvailableCount: Int?
+    let finalSlotIDs: Set<String>
     let calendar: Calendar
 
     private let columnCount = 5
@@ -2342,9 +3216,37 @@ private struct OnboardingResponseBlockStage: View {
     private let rowHeight: CGFloat = 58
 
     private var visibleSlots: [DerivationResponseSlot] {
-        slots.enumerated().compactMap { index, slot in
+        displayedSlots.enumerated().compactMap { index, slot in
             index < visibleBlockCount ? slot : nil
         }
+    }
+
+    private var displayedSlots: [DerivationResponseSlot] {
+        let filteredSlots = slots.filter { slot in
+            if hidesCriteriaExcludedSlots && criteria.excludes(hour: slot.hour) {
+                return false
+            }
+
+            if hidesUnavailableSlots && slot.requiredUnavailableCount > 0 {
+                return false
+            }
+
+            if hidesBurdenHeavySlots && isBurdenExcluded(slot) {
+                return false
+            }
+
+            if hidesLowAvailabilitySlots && isLowAvailabilityExcluded(slot) {
+                return false
+            }
+
+            if hidesNonFinalSlots && !finalSlotIDs.contains(slot.id) {
+                return false
+            }
+
+            return true
+        }
+
+        return DerivationResponseSlot.reindexedRows(for: filteredSlots)
     }
 
     var body: some View {
@@ -2372,16 +3274,23 @@ private struct OnboardingResponseBlockStage: View {
                             .delay(Double(index % 5) * 0.025 + Double(index / 5) * 0.04),
                         value: phase
                     )
+                    .transition(
+                        .asymmetric(
+                            insertion: .opacity.combined(with: .scale(scale: 0.96)),
+                            removal: .opacity.combined(with: .scale(scale: 0.92))
+                        )
+                    )
                 }
             }
             .frame(width: proxy.size.width, height: stageHeight, alignment: .topLeading)
         }
         .frame(height: stageHeight)
         .animation(.spring(response: 0.68, dampingFraction: 0.9), value: phase)
+        .animation(.spring(response: 0.62, dampingFraction: 0.9), value: displayedSlots.map(\.id).joined(separator: "|"))
     }
 
     private var stageHeight: CGFloat {
-        let rowCount = max((slots.map(\.rowIndex).max() ?? 0) + 1, 1)
+        let rowCount = max((displayedSlots.map(\.rowIndex).max() ?? 0) + 1, 1)
         return CGFloat(rowCount) * rowHeight + CGFloat(max(rowCount - 1, 0)) * rowSpacing
     }
 
@@ -2394,7 +3303,35 @@ private struct OnboardingResponseBlockStage: View {
             return true
         }
 
-        return phase == .comparing && slot.unavailableCount > 0
+        if phase == .comparing && slot.requiredUnavailableCount > 0 {
+            return true
+        }
+
+        if phase == .burden && isBurdenExcluded(slot) {
+            return true
+        }
+
+        if phase == .availability && isLowAvailabilityExcluded(slot) {
+            return true
+        }
+
+        return phase == .final && !finalSlotIDs.contains(slot.id)
+    }
+
+    private func isBurdenExcluded(_ slot: DerivationResponseSlot) -> Bool {
+        guard let burdenExclusionThreshold else {
+            return false
+        }
+
+        return slot.requiredUnavailableCount == 0 && slot.burdenCount >= burdenExclusionThreshold
+    }
+
+    private func isLowAvailabilityExcluded(_ slot: DerivationResponseSlot) -> Bool {
+        guard let minimumPreferredAvailableCount else {
+            return false
+        }
+
+        return slot.requiredUnavailableCount == 0 && slot.availableCount < minimumPreferredAvailableCount
     }
 
 }
@@ -2406,8 +3343,16 @@ private struct OnboardingResponseBlockCard: View {
     let phase: MeetingDerivationPhase
     let isDimmed: Bool
 
-    private var hasUnavailable: Bool {
-        slot.unavailableCount > 0
+    private var hasRequiredUnavailable: Bool {
+        slot.requiredUnavailableCount > 0
+    }
+
+    private var hasOptionalUnavailable: Bool {
+        slot.optionalUnavailableCount > 0
+    }
+
+    private var hasBurden: Bool {
+        slot.burdenCount > 0
     }
 
     var body: some View {
@@ -2421,9 +3366,13 @@ private struct OnboardingResponseBlockCard: View {
 
                 Spacer(minLength: 0)
 
-                if hasUnavailable && !isDimmed {
+                if hasRequiredUnavailable && !isDimmed {
                     Circle()
                         .fill(Color(uiColor: .systemRed).opacity(0.82))
+                        .frame(width: 5, height: 5)
+                } else if hasOptionalUnavailable && !isDimmed {
+                    Circle()
+                        .fill(Color(uiColor: .systemOrange).opacity(0.76))
                         .frame(width: 5, height: 5)
                 }
             }
@@ -2461,15 +3410,23 @@ private struct OnboardingResponseBlockCard: View {
 
     private var blockBackground: Color {
         if isDimmed {
-            if hasUnavailable {
+            if hasRequiredUnavailable {
                 return Color(uiColor: .systemRed).opacity(0.12)
+            }
+
+            if hasOptionalUnavailable || hasBurden {
+                return Color(uiColor: .systemOrange).opacity(0.11)
             }
 
             return Color(uiColor: .systemBackground).opacity(0.82)
         }
 
-        if hasUnavailable {
+        if hasRequiredUnavailable {
             return Color(uiColor: .systemRed).opacity(0.075)
+        }
+
+        if hasOptionalUnavailable {
+            return Color(uiColor: .systemOrange).opacity(0.07)
         }
 
         return Color(uiColor: .secondarySystemBackground).opacity(0.94)
@@ -2477,14 +3434,26 @@ private struct OnboardingResponseBlockCard: View {
 
     private var strokeColor: Color {
         if isDimmed {
-            if hasUnavailable {
+            if hasRequiredUnavailable {
                 return Color(uiColor: .systemRed).opacity(0.2)
+            }
+
+            if hasOptionalUnavailable || hasBurden {
+                return Color(uiColor: .systemOrange).opacity(0.18)
             }
 
             return Color.white.opacity(0.7)
         }
 
-        return hasUnavailable ? Color(uiColor: .systemRed).opacity(0.22) : Color(uiColor: .separator).opacity(0.08)
+        if hasRequiredUnavailable {
+            return Color(uiColor: .systemRed).opacity(0.22)
+        }
+
+        if hasOptionalUnavailable {
+            return Color(uiColor: .systemOrange).opacity(0.18)
+        }
+
+        return Color(uiColor: .separator).opacity(0.08)
     }
 
     private var strokeLineWidth: CGFloat {
@@ -2492,7 +3461,7 @@ private struct OnboardingResponseBlockCard: View {
             return 0.8
         }
 
-        return hasUnavailable ? 0.9 : 0.7
+        return (hasRequiredUnavailable || hasOptionalUnavailable) ? 0.9 : 0.7
     }
 }
 
@@ -2503,11 +3472,18 @@ private struct DerivationResponseSlot: Identifiable, Hashable {
     let hour: Int
     let availableCount: Int
     let burdenCount: Int
+    let weightedBurdenScore: Int
     let unavailableCount: Int
+    let requiredAvailableCount: Int
+    let requiredUnavailableCount: Int
+    let optionalAvailableCount: Int
+    let optionalUnavailableCount: Int
+    let requiredTotalCount: Int
+    let optionalTotalCount: Int
     let calendar: Calendar
 
     var id: String {
-        "\(dayIndex)-\(rowIndex)-\(hour)-\(availableCount)-\(burdenCount)-\(unavailableCount)"
+        "\(dayIndex)-\(hour)-\(availableCount)-\(burdenCount)-\(weightedBurdenScore)-\(unavailableCount)-\(requiredUnavailableCount)-\(optionalUnavailableCount)"
     }
 
     var mergeSignature: String {
@@ -2518,11 +3494,23 @@ private struct DerivationResponseSlot: Identifiable, Hashable {
         "\(String(format: "%02d", hour)):00"
     }
 
+    var timeRangeText: String {
+        "\(String(format: "%02d", hour)):00 - \(String(format: "%02d", hour + 1)):00"
+    }
+
     func compactDayText(calendar: Calendar) -> String {
         let day = calendar.component(.day, from: date)
         let symbols = ["일", "월", "화", "수", "목", "금", "토"]
         let index = max(min(calendar.component(.weekday, from: date) - 1, symbols.count - 1), 0)
         return "\(symbols[index]) \(day)"
+    }
+
+    func fullDateText(calendar: Calendar) -> String {
+        let month = calendar.component(.month, from: date)
+        let day = calendar.component(.day, from: date)
+        let symbols = ["일", "월", "화", "수", "목", "금", "토"]
+        let index = max(min(calendar.component(.weekday, from: date) - 1, symbols.count - 1), 0)
+        return "\(month)월 \(day)일 \(symbols[index])요일"
     }
 
     static func makeSlots(for meeting: HomeMeeting, calendar: Calendar) -> [DerivationResponseSlot] {
@@ -2549,10 +3537,44 @@ private struct DerivationResponseSlot: Identifiable, Hashable {
                     hour: hour,
                     availableCount: summary.availableCount,
                     burdenCount: summary.burdenCount,
+                    weightedBurdenScore: summary.weightedBurdenScore,
                     unavailableCount: summary.unavailableCount,
+                    requiredAvailableCount: summary.requiredAvailableCount,
+                    requiredUnavailableCount: summary.requiredUnavailableCount,
+                    optionalAvailableCount: summary.optionalAvailableCount,
+                    optionalUnavailableCount: summary.optionalUnavailableCount,
+                    requiredTotalCount: summary.requiredTotalCount,
+                    optionalTotalCount: summary.optionalTotalCount,
                     calendar: calendar,
                 )
             }
+        }
+    }
+
+    static func reindexedRows(for slots: [DerivationResponseSlot]) -> [DerivationResponseSlot] {
+        let sortedHours = Array(Set(slots.map(\.hour))).sorted()
+        let rowIndexByHour = Dictionary(uniqueKeysWithValues: sortedHours.enumerated().map { index, hour in
+            (hour, index)
+        })
+
+        return slots.map { slot in
+            DerivationResponseSlot(
+                date: slot.date,
+                dayIndex: slot.dayIndex,
+                rowIndex: rowIndexByHour[slot.hour] ?? slot.rowIndex,
+                hour: slot.hour,
+                availableCount: slot.availableCount,
+                burdenCount: slot.burdenCount,
+                weightedBurdenScore: slot.weightedBurdenScore,
+                unavailableCount: slot.unavailableCount,
+                requiredAvailableCount: slot.requiredAvailableCount,
+                requiredUnavailableCount: slot.requiredUnavailableCount,
+                optionalAvailableCount: slot.optionalAvailableCount,
+                optionalUnavailableCount: slot.optionalUnavailableCount,
+                requiredTotalCount: slot.requiredTotalCount,
+                optionalTotalCount: slot.optionalTotalCount,
+                calendar: slot.calendar
+            )
         }
     }
 
@@ -3400,8 +4422,7 @@ private struct MeetingDecisionCandidate: Identifiable, Hashable {
 
     static func makeCandidates(for meeting: HomeMeeting, calendar: Calendar) -> [MeetingDecisionCandidate] {
         let dates = candidateDates(from: meeting.candidateStartDate, to: meeting.candidateEndDate, calendar: calendar)
-        let requiredTotal = min(max(meeting.memberCount - 2, 1), 4)
-        let optionalTotal = max(meeting.memberCount - requiredTotal, 0)
+        let summaries = TeamResponseSummary.makeSummaries(for: meeting, dates: dates, calendar: calendar)
 
         return dates.enumerated().flatMap { dayIndex, date in
             let dailyCandidates = (9..<18).compactMap { hour -> MeetingDecisionCandidate? in
@@ -3409,31 +4430,27 @@ private struct MeetingDecisionCandidate: Identifiable, Hashable {
                     return nil
                 }
 
-                let seed = abs(dayIndex * 23 + hour * 17 + meeting.memberCount * 5)
-                let requiredUnavailable = seed % 13 == 0 ? 1 : 0
-
-                guard requiredUnavailable == 0 else {
+                let slot = AvailabilitySlot(date: calendar.startOfDay(for: date), hour: hour)
+                guard let summary = summaries[slot], summary.requiredUnavailableCount == 0 else {
                     return nil
                 }
 
-                let optionalUnavailable = optionalTotal > 0 && seed % 7 == 0 ? 1 : 0
-                let burdenCount = seed % 5 == 0 ? 2 : (seed % 3 == 0 ? 1 : 0)
-                let timePreferencePenalty = abs(hour - 14) * 2
+                let timePreferencePenalty = meeting.derivationCriteria.timePreferencePenalty(for: hour)
                 let score = max(
                     56,
-                    100 - optionalUnavailable * 11 - burdenCount * 7 - timePreferencePenalty - dayIndex
+                    100 - summary.optionalUnavailableCount * 11 - summary.weightedBurdenScore * 5 - timePreferencePenalty - dayIndex
                 )
 
                 return MeetingDecisionCandidate(
                     date: calendar.startOfDay(for: date),
                     hour: hour,
                     score: score,
-                    requiredAvailable: requiredTotal,
-                    requiredTotal: requiredTotal,
-                    optionalAvailable: max(optionalTotal - optionalUnavailable, 0),
-                    optionalTotal: optionalTotal,
-                    burdenCount: burdenCount,
-                    unavailableCount: optionalUnavailable
+                    requiredAvailable: summary.requiredAvailableCount,
+                    requiredTotal: summary.requiredTotalCount,
+                    optionalAvailable: summary.optionalAvailableCount,
+                    optionalTotal: summary.optionalTotalCount,
+                    burdenCount: summary.burdenCount,
+                    unavailableCount: summary.optionalUnavailableCount
                 )
             }
 
@@ -3449,30 +4466,31 @@ private struct MeetingDecisionCandidate: Identifiable, Hashable {
 
     static func makeOnboardingGridCandidates(for meeting: HomeMeeting, calendar: Calendar) -> [MeetingDecisionCandidate] {
         let dates = Array(candidateDates(from: meeting.candidateStartDate, to: meeting.candidateEndDate, calendar: calendar).prefix(5))
-        let requiredTotal = min(max(meeting.memberCount - 2, 1), 4)
-        let optionalTotal = max(meeting.memberCount - requiredTotal, 0)
+        let summaries = TeamResponseSummary.makeSummaries(for: meeting, dates: dates, calendar: calendar)
 
         return (9..<18).flatMap { hour in
-            dates.enumerated().map { dayIndex, date in
-                let seed = abs(dayIndex * 23 + hour * 17 + meeting.memberCount * 5)
-                let optionalUnavailable = optionalTotal > 0 && (seed % 7 == 0 || seed % 17 == 0) ? 1 : 0
-                let burdenCount = seed % 5 == 0 ? 2 : (seed % 3 == 0 ? 1 : 0)
-                let timePreferencePenalty = abs(hour - 14) * 2
+            dates.enumerated().compactMap { dayIndex, date in
+                let slot = AvailabilitySlot(date: calendar.startOfDay(for: date), hour: hour)
+                guard let summary = summaries[slot] else {
+                    return nil
+                }
+
+                let timePreferencePenalty = meeting.derivationCriteria.timePreferencePenalty(for: hour)
                 let score = max(
                     56,
-                    100 - optionalUnavailable * 11 - burdenCount * 7 - timePreferencePenalty - dayIndex
+                    100 - summary.optionalUnavailableCount * 11 - summary.weightedBurdenScore * 5 - timePreferencePenalty - dayIndex
                 )
 
                 return MeetingDecisionCandidate(
                     date: calendar.startOfDay(for: date),
                     hour: hour,
                     score: score,
-                    requiredAvailable: requiredTotal,
-                    requiredTotal: requiredTotal,
-                    optionalAvailable: max(optionalTotal - optionalUnavailable, 0),
-                    optionalTotal: optionalTotal,
-                    burdenCount: burdenCount,
-                    unavailableCount: optionalUnavailable
+                    requiredAvailable: summary.requiredAvailableCount,
+                    requiredTotal: summary.requiredTotalCount,
+                    optionalAvailable: summary.optionalAvailableCount,
+                    optionalTotal: summary.optionalTotalCount,
+                    burdenCount: summary.burdenCount,
+                    unavailableCount: summary.optionalUnavailableCount
                 )
             }
         }
@@ -8229,6 +9247,7 @@ private struct HomeMeeting: Identifiable {
     let status: MeetingStatus
     let stage: MeetingStage
     let memberInitials: [String]
+    let requiredMemberIndexes: Set<Int>
     let focusDate: Date
     let candidateStartDate: Date
     let candidateEndDate: Date
@@ -8249,6 +9268,10 @@ private struct HomeMeeting: Identifiable {
 
     func sharedWithMembers(hostAvailabilityEntries: [AvailabilitySlot: AvailabilityEntry]) -> HomeMeeting {
         let normalizedMembers = Self.prototypeSixMembers(from: memberInitials)
+        let normalizedRequiredIndexes = Self.normalizedRequiredIndexes(
+            from: requiredMemberIndexes,
+            memberCount: normalizedMembers.count
+        )
 
         return HomeMeeting(
             id: id,
@@ -8265,6 +9288,7 @@ private struct HomeMeeting: Identifiable {
             status: .collecting,
             stage: .collectingResponses,
             memberInitials: normalizedMembers,
+            requiredMemberIndexes: normalizedRequiredIndexes,
             focusDate: focusDate,
             candidateStartDate: candidateStartDate,
             candidateEndDate: candidateEndDate,
@@ -8289,12 +9313,29 @@ private struct HomeMeeting: Identifiable {
             status: .ready,
             stage: .bracketReview,
             memberInitials: memberInitials,
+            requiredMemberIndexes: normalizedRequiredIndexes,
             focusDate: focusDate,
             candidateStartDate: candidateStartDate,
             candidateEndDate: candidateEndDate,
             confirmedDay: confirmedDay,
             confirmedWeekday: confirmedWeekday
         )
+    }
+
+    var normalizedRequiredIndexes: Set<Int> {
+        Self.normalizedRequiredIndexes(from: requiredMemberIndexes, memberCount: memberCount)
+    }
+
+    var requiredMemberCount: Int {
+        normalizedRequiredIndexes.count
+    }
+
+    var optionalMemberCount: Int {
+        max(memberCount - requiredMemberCount, 0)
+    }
+
+    func isRequiredMember(at index: Int) -> Bool {
+        normalizedRequiredIndexes.contains(index)
     }
 
     static let sampleData = [
@@ -8313,6 +9354,7 @@ private struct HomeMeeting: Identifiable {
             status: .collecting,
             stage: .hostAvailability,
             memberInitials: ["나", "김민준", "이서연", "오유진", "송승아"],
+            requiredMemberIndexes: [0, 1, 2, 3],
             focusDate: Self.makeDate(year: 2026, month: 7, day: 15),
             candidateStartDate: Self.makeDate(year: 2026, month: 7, day: 15),
             candidateEndDate: Self.makeDate(year: 2026, month: 7, day: 18),
@@ -8334,6 +9376,7 @@ private struct HomeMeeting: Identifiable {
             status: .ready,
             stage: .bracketReview,
             memberInitials: ["나", "문준호", "오유진", "정지우"],
+            requiredMemberIndexes: [0, 1, 2],
             focusDate: Self.makeDate(year: 2026, month: 7, day: 16),
             candidateStartDate: Self.makeDate(year: 2026, month: 7, day: 16),
             candidateEndDate: Self.makeDate(year: 2026, month: 7, day: 17),
@@ -8355,6 +9398,7 @@ private struct HomeMeeting: Identifiable {
             status: .waiting,
             stage: .collectingResponses,
             memberInitials: ["나", "정지우", "임다혜", "장혜진", "윤재현", "최하린"],
+            requiredMemberIndexes: [0, 1, 2, 3],
             focusDate: Self.makeDate(year: 2026, month: 7, day: 21),
             candidateStartDate: Self.makeDate(year: 2026, month: 7, day: 21),
             candidateEndDate: Self.makeDate(year: 2026, month: 7, day: 22),
@@ -8376,6 +9420,7 @@ private struct HomeMeeting: Identifiable {
             status: .confirmed,
             stage: .confirmed,
             memberInitials: ["나", "한유나", "강태호"],
+            requiredMemberIndexes: [0, 1, 2],
             focusDate: Self.makeDate(year: 2026, month: 7, day: 14),
             candidateStartDate: Self.makeDate(year: 2026, month: 7, day: 14),
             candidateEndDate: Self.makeDate(year: 2026, month: 7, day: 14),
@@ -8399,6 +9444,16 @@ private struct HomeMeeting: Identifiable {
         }
 
         return Array(normalizedNames.prefix(6))
+    }
+
+    private static func normalizedRequiredIndexes(from indexes: Set<Int>, memberCount: Int) -> Set<Int> {
+        let validIndexes = indexes.filter { (0..<memberCount).contains($0) }
+        guard !validIndexes.isEmpty else {
+            let defaultRequiredCount = min(max(memberCount - 2, 1), 4)
+            return Set(0..<defaultRequiredCount)
+        }
+
+        return validIndexes.union([0])
     }
 
     private static func makeDate(year: Int, month: Int, day: Int) -> Date {
@@ -9867,6 +10922,12 @@ private struct TeamResponseSummary: Equatable {
     let availableNames: [String]
     let burdenMembers: [TeamResponseReason]
     let unavailableMembers: [TeamResponseReason]
+    let requiredAvailableCount: Int
+    let requiredUnavailableCount: Int
+    let optionalAvailableCount: Int
+    let optionalUnavailableCount: Int
+    let requiredTotalCount: Int
+    let optionalTotalCount: Int
 
     var totalCount: Int {
         availableCount + burdenCount + unavailableCount
@@ -9880,8 +10941,31 @@ private struct TeamResponseSummary: Equatable {
         burdenMembers.count
     }
 
+    var weightedBurdenScore: Int {
+        burdenMembers.reduce(0) { $0 + $1.category.weight }
+    }
+
+    var burdenCategorySummaries: [BurdenCategorySummary] {
+        BurdenCategory.allCases.compactMap { category in
+            let count = burdenMembers.filter { $0.category == category }.count
+            guard count > 0 else {
+                return nil
+            }
+
+            return BurdenCategorySummary(category: category, count: count)
+        }
+    }
+
     var unavailableCount: Int {
         unavailableMembers.count
+    }
+
+    var requiredParticipationText: String {
+        "\(requiredAvailableCount)/\(requiredTotalCount) 필참"
+    }
+
+    var optionalParticipationText: String {
+        "\(optionalAvailableCount)/\(optionalTotalCount) 선택"
     }
 
     var caption: String {
@@ -9944,7 +11028,7 @@ private struct TeamResponseSummary: Equatable {
         let normalizedNames = (0..<max(meeting.memberCount, memberNames.count)).map { index in
             index < memberNames.count ? memberNames[index] : "팀원 \(index)"
         }
-        let burdenReasons = ["앞 일정과 붙어 있음", "이동 시간이 필요함", "준비 시간이 부족함"]
+        let burdenReasons = ["앞 회의와 붙어 있음", "외근 후 복귀 시간이 애매함", "점심 직후라 집중이 낮음", "마감 업무 전후라 조정이 필요함"]
         let unavailableReasons = ["이미 확정된 회의", "외부 미팅", "개인 일정"]
         var summaries: [AvailabilitySlot: TeamResponseSummary] = [:]
 
@@ -9958,16 +11042,37 @@ private struct TeamResponseSummary: Equatable {
                 var available: [String] = []
                 var burden: [TeamResponseReason] = []
                 var unavailable: [TeamResponseReason] = []
+                var requiredAvailableCount = 0
+                var requiredUnavailableCount = 0
+                var optionalAvailableCount = 0
+                var optionalUnavailableCount = 0
 
                 for (memberIndex, name) in normalizedNames.enumerated() {
+                    let isRequired = meeting.isRequiredMember(at: memberIndex)
+
                     if memberIndex == 0, let hostEntry = meeting.hostAvailabilityEntries[slot] {
                         switch hostEntry.mode {
                         case .available:
                             available.append(name)
+                            if isRequired {
+                                requiredAvailableCount += 1
+                            } else {
+                                optionalAvailableCount += 1
+                            }
                         case .burden:
                             burden.append(TeamResponseReason(name: name, reason: hostEntry.reason ?? "조정 가능"))
+                            if isRequired {
+                                requiredAvailableCount += 1
+                            } else {
+                                optionalAvailableCount += 1
+                            }
                         case .unavailable:
                             unavailable.append(TeamResponseReason(name: name, reason: hostEntry.reason ?? "참석 어려움"))
+                            if isRequired {
+                                requiredUnavailableCount += 1
+                            } else {
+                                optionalUnavailableCount += 1
+                            }
                         }
                         continue
                     }
@@ -9981,6 +11086,11 @@ private struct TeamResponseSummary: Equatable {
                                 reason: unavailableReasons[seed % unavailableReasons.count]
                             )
                         )
+                        if isRequired {
+                            requiredUnavailableCount += 1
+                        } else {
+                            optionalUnavailableCount += 1
+                        }
                     } else if seed % 5 == 0 {
                         burden.append(
                             TeamResponseReason(
@@ -9988,20 +11098,118 @@ private struct TeamResponseSummary: Equatable {
                                 reason: burdenReasons[seed % burdenReasons.count]
                             )
                         )
+                        if isRequired {
+                            requiredAvailableCount += 1
+                        } else {
+                            optionalAvailableCount += 1
+                        }
                     } else {
                         available.append(name)
+                        if isRequired {
+                            requiredAvailableCount += 1
+                        } else {
+                            optionalAvailableCount += 1
+                        }
                     }
                 }
 
                 summaries[slot] = TeamResponseSummary(
                     availableNames: available,
                     burdenMembers: burden,
-                    unavailableMembers: unavailable
+                    unavailableMembers: unavailable,
+                    requiredAvailableCount: requiredAvailableCount,
+                    requiredUnavailableCount: requiredUnavailableCount,
+                    optionalAvailableCount: optionalAvailableCount,
+                    optionalUnavailableCount: optionalUnavailableCount,
+                    requiredTotalCount: meeting.requiredMemberCount,
+                    optionalTotalCount: meeting.optionalMemberCount
                 )
             }
         }
 
         return summaries
+    }
+}
+
+private struct BurdenCategorySummary: Identifiable, Equatable {
+    let category: BurdenCategory
+    let count: Int
+
+    var id: String {
+        category.rawValue
+    }
+}
+
+private enum BurdenCategory: String, CaseIterable {
+    case schedule
+    case movement
+    case condition
+    case personal
+
+    var title: String {
+        switch self {
+        case .schedule:
+            return "일정"
+        case .movement:
+            return "이동"
+        case .condition:
+            return "컨디션"
+        case .personal:
+            return "개인"
+        }
+    }
+
+    var weight: Int {
+        switch self {
+        case .schedule, .movement:
+            return 3
+        case .personal:
+            return 2
+        case .condition:
+            return 1
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .schedule:
+            return Color(uiColor: .systemRed)
+        case .movement:
+            return Color(uiColor: .systemOrange)
+        case .condition:
+            return Color(uiColor: .systemTeal)
+        case .personal:
+            return Color(uiColor: .systemPurple)
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .schedule:
+            return "calendar.badge.clock"
+        case .movement:
+            return "arrow.triangle.swap"
+        case .condition:
+            return "moon.zzz.fill"
+        case .personal:
+            return "person.fill"
+        }
+    }
+
+    static func classify(reason: String) -> BurdenCategory {
+        if reason.contains("회의") || reason.contains("일정") || reason.contains("붙어") || reason.contains("확정") {
+            return .schedule
+        }
+
+        if reason.contains("이동") || reason.contains("외근") || reason.contains("복귀") {
+            return .movement
+        }
+
+        if reason.contains("점심") || reason.contains("집중") || reason.contains("피곤") || reason.contains("컨디션") || reason.contains("아침") || reason.contains("퇴근") {
+            return .condition
+        }
+
+        return .personal
     }
 }
 
@@ -10011,6 +11219,10 @@ private struct TeamResponseReason: Equatable, Identifiable {
 
     var id: String {
         "\(name)-\(reason)"
+    }
+
+    var category: BurdenCategory {
+        BurdenCategory.classify(reason: reason)
     }
 }
 
