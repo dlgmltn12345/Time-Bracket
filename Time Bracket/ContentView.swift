@@ -1240,14 +1240,21 @@ private struct DerivationCriteriaSheet: View {
 
                     criteriaCard(
                         title: "추천 방식",
-                        detail: "남은 시간을 어떤 기준으로 고를지 정합니다."
+                        detail: "회의 성격에 맞춰 추천 순서를 조정합니다."
                     ) {
-                        Picker("추천 방식", selection: $criteria.priority) {
-                            ForEach(DerivationDecisionPriority.allCases) { priority in
-                                Text(priority.title).tag(priority)
+                        VStack(alignment: .leading, spacing: 10) {
+                            Picker("추천 방식", selection: $criteria.priority) {
+                                ForEach(DerivationDecisionPriority.allCases) { priority in
+                                    Text(priority.title).tag(priority)
+                                }
                             }
+                            .pickerStyle(.segmented)
+
+                            Text(criteria.priority.detail)
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
-                        .pickerStyle(.segmented)
                     }
 
                     Button(action: onStart) {
@@ -1414,11 +1421,22 @@ private enum DerivationDecisionPriority: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .allAvailable:
-            return "참석 우선"
+            return "모두 참석"
         case .lowBurden:
-            return "부담 최소"
+            return "부담 적게"
         case .requiredFirst:
-            return "필참 안정"
+            return "필참 중심"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .allAvailable:
+            return "6명 모두 가능한 시간을 먼저 추천합니다."
+        case .lowBurden:
+            return "가능하더라도 부담 사유가 적은 시간을 우선합니다."
+        case .requiredFirst:
+            return "필참 멤버가 안정적으로 참여할 수 있는 시간을 우선합니다."
         }
     }
 }
@@ -1963,10 +1981,10 @@ private struct AvailabilityReasonSheet: View {
             return []
         case .burden:
             return [
-                ReasonSuggestion(title: "앞 일정 직후", reason: "앞 일정 직후라 준비 시간이 부족함", category: .schedule),
-                ReasonSuggestion(title: "외근 복귀", reason: "외근 후 복귀 시간이 애매함", category: .movement),
-                ReasonSuggestion(title: "연속 회의", reason: "연속 회의 후 회복 시간이 필요함", category: .condition),
-                ReasonSuggestion(title: "개인 일정", reason: "개인 일정 확인이 필요한 시간", category: .personal)
+                ReasonSuggestion(title: "준비 시간 부족", reason: "바로 전 일정이 끝난 직후라 회의 준비 시간이 부족합니다.", category: .schedule),
+                ReasonSuggestion(title: "이동 부담", reason: "다른 장소에서 복귀해야 해서 시작 시간이 불안정합니다.", category: .movement),
+                ReasonSuggestion(title: "집중도 낮음", reason: "점심 직후라 중요한 의사결정 회의에는 부담됩니다.", category: .condition),
+                ReasonSuggestion(title: "개인 일정", reason: "개인 일정 전후라 안정적으로 참여하기 어렵습니다.", category: .personal)
             ]
         case .unavailable:
             return draft.mode.reasonSuggestions.map {
@@ -2139,7 +2157,12 @@ private enum AvailabilityMode: String, CaseIterable, Identifiable {
         case .available:
             return []
         case .burden:
-            return ["앞 일정 직후라 준비 시간이 부족함", "외근 후 복귀 시간이 애매함", "연속 회의 후 회복 시간이 필요함", "개인 일정 확인이 필요한 시간"]
+            return [
+                "바로 전 일정이 끝난 직후라 회의 준비 시간이 부족합니다.",
+                "다른 장소에서 복귀해야 해서 시작 시간이 불안정합니다.",
+                "점심 직후라 중요한 의사결정 회의에는 부담됩니다.",
+                "개인 일정 전후라 안정적으로 참여하기 어렵습니다."
+            ]
         case .unavailable:
             return ["확정된 회의와 겹침", "외부 미팅 이동 중", "휴가/반차로 참석 불가", "병원/가족 일정"]
         }
@@ -2147,13 +2170,13 @@ private enum AvailabilityMode: String, CaseIterable, Identifiable {
 
     func reasonSuggestionTitle(for suggestion: String) -> String {
         switch suggestion {
-        case "앞 일정 직후라 준비 시간이 부족함":
-            return "앞 일정 직후"
-        case "외근 후 복귀 시간이 애매함":
-            return "외근 복귀"
-        case "연속 회의 후 회복 시간이 필요함":
-            return "연속 회의"
-        case "개인 일정 확인이 필요한 시간":
+        case "바로 전 일정이 끝난 직후라 회의 준비 시간이 부족합니다.":
+            return "준비 시간 부족"
+        case "다른 장소에서 복귀해야 해서 시작 시간이 불안정합니다.":
+            return "이동 부담"
+        case "점심 직후라 중요한 의사결정 회의에는 부담됩니다.":
+            return "집중도 낮음"
+        case "개인 일정 전후라 안정적으로 참여하기 어렵습니다.":
             return "개인 일정"
         case "확정된 회의와 겹침":
             return "회의 겹침"
@@ -2847,61 +2870,70 @@ private struct BracketReviewScreen: View {
         case .burden:
             return [
                 DerivationPhaseChip(title: burdenThresholdText, symbolName: "exclamationmark.triangle.fill", color: Color(uiColor: .systemOrange)),
-                DerivationPhaseChip(title: "부담 낮은 시간", symbolName: "arrow.down.heart.fill", color: Color(uiColor: .systemOrange))
+                DerivationPhaseChip(title: "부담 적은 시간 우선", symbolName: "arrow.down.heart.fill", color: Color(uiColor: .systemOrange))
             ]
         case .availability:
             return [
                 DerivationPhaseChip(title: availabilityThresholdText, symbolName: "person.2.fill", color: Color(uiColor: .systemGreen)),
-                DerivationPhaseChip(title: "참석 가능성 우선", symbolName: "checkmark.circle.fill", color: Color(uiColor: .systemGreen))
+                DerivationPhaseChip(title: "전원 참석 가능", symbolName: "checkmark.circle.fill", color: Color(uiColor: .systemGreen))
             ]
         case .final:
-            return [
+            var chips = [
                 DerivationPhaseChip(title: "추천 2안", symbolName: "sparkles", color: Color(uiColor: .systemBlue)),
                 DerivationPhaseChip(title: meeting.derivationCriteria.priority.title, symbolName: "slider.horizontal.3", color: Color(uiColor: .systemIndigo))
             ]
+
+            if let preferenceChip = timePreferenceChip {
+                chips.append(preferenceChip)
+            }
+
+            return chips
         }
     }
 
     private var filteringChips: [DerivationPhaseChip] {
         var chips: [DerivationPhaseChip] = []
+        let neutralColor = Color(uiColor: .systemGray)
 
         if meeting.excludedTimeRule.isEnabled {
             chips.append(
                 DerivationPhaseChip(
                     title: meeting.excludedTimeRule.title,
                     symbolName: "clock.badge.xmark.fill",
-                    color: Color(uiColor: .systemGray)
-                )
-            )
-        }
-
-        if meeting.derivationCriteria.timePreference != .any {
-            chips.append(
-                DerivationPhaseChip(
-                    title: meeting.derivationCriteria.timePreference.title,
-                    symbolName: "clock.fill",
-                    color: Color(uiColor: .systemBlue)
+                    color: neutralColor
                 )
             )
         }
 
         if meeting.derivationCriteria.avoidsAfterLunch {
-            chips.append(DerivationPhaseChip(title: "점심 직후 제외", symbolName: "fork.knife", color: Color(uiColor: .systemOrange)))
+            chips.append(DerivationPhaseChip(title: "점심 직후 제외", symbolName: "fork.knife", color: neutralColor))
         }
 
         if meeting.derivationCriteria.avoidsNearLeaving {
-            chips.append(DerivationPhaseChip(title: "퇴근 직전 제외", symbolName: "moon.zzz.fill", color: Color(uiColor: .systemIndigo)))
+            chips.append(DerivationPhaseChip(title: "퇴근 직전 제외", symbolName: "moon.zzz.fill", color: neutralColor))
         }
 
         if meeting.derivationCriteria.avoidsEarlyMorning {
-            chips.append(DerivationPhaseChip(title: "첫 시간 제외", symbolName: "sunrise.fill", color: Color(uiColor: .systemYellow)))
+            chips.append(DerivationPhaseChip(title: "첫 시간 제외", symbolName: "sunrise.fill", color: neutralColor))
         }
 
         if chips.isEmpty {
-            chips.append(DerivationPhaseChip(title: "기본 기준", symbolName: "slider.horizontal.3", color: Color(uiColor: .systemBlue)))
+            chips.append(DerivationPhaseChip(title: "기본 기준", symbolName: "slider.horizontal.3", color: neutralColor))
         }
 
         return Array(chips.prefix(3))
+    }
+
+    private var timePreferenceChip: DerivationPhaseChip? {
+        guard meeting.derivationCriteria.timePreference != .any else {
+            return nil
+        }
+
+        return DerivationPhaseChip(
+            title: "\(meeting.derivationCriteria.timePreference.title) 우선",
+            symbolName: "clock.fill",
+            color: Color(uiColor: .systemBlue)
+        )
     }
 
     private var unavailableSlotCount: Int {
@@ -2910,10 +2942,10 @@ private struct BracketReviewScreen: View {
 
     private var burdenThresholdText: String {
         guard let burdenExclusionThreshold else {
-            return "부담 없음"
+            return "부담 응답 확인"
         }
 
-        return "부담 리스크 \(burdenExclusionThreshold) 이상 제외"
+        return "부담 응답 많은 시간 제외"
     }
 
     private var availabilityThresholdText: String {
@@ -3017,7 +3049,7 @@ private enum MeetingDerivationPhase: Int {
         case .preparing:
             return "팀원들이 입력한 시간을 검토 후보로 바꿉니다."
         case .filtering:
-            return "우선 시간대와 피할 시간을 먼저 반영합니다."
+            return "회의 후보에서 제외할 시간을 먼저 반영합니다."
         case .comparing:
             return "선택 참석자 불가는 제외하지 않고 순위에 반영합니다."
         case .burden:
@@ -3025,7 +3057,7 @@ private enum MeetingDerivationPhase: Int {
         case .availability:
             return "남은 검토 후보 중 참석 가능성이 높은 시간을 남깁니다."
         case .final:
-            return "남은 검토 후보 중 가장 설득력 있는 시간을 제안합니다."
+            return "남은 검토 후보에 선호 기준을 반영해 추천안을 제안합니다."
         }
     }
 }
@@ -11830,6 +11862,10 @@ private enum BurdenCategory: String, CaseIterable, Identifiable {
     }
 
     static func classify(reason: String) -> BurdenCategory {
+        if reason.contains("개인 일정") || reason.contains("병원") || reason.contains("가족") || reason.contains("하원") {
+            return .personal
+        }
+
         if reason.contains("회의") || reason.contains("일정") || reason.contains("붙어") || reason.contains("확정") || reason.contains("마감") || reason.contains("승인") || reason.contains("고객") {
             return .schedule
         }
