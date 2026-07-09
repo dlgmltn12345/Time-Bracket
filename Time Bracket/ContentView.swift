@@ -2941,7 +2941,7 @@ private struct BracketReviewScreen: View {
     }
 
     private var burdenThresholdText: String {
-        guard let burdenExclusionThreshold else {
+        guard burdenExclusionThreshold != nil else {
             return "부담 응답 확인"
         }
 
@@ -3231,6 +3231,294 @@ private struct EliminatedCandidateGroup: Identifiable {
     }
 }
 
+private enum BorderBeamSize {
+    case sm
+    case md
+    case line
+    case pulseInner
+    case pulseOutside
+
+    var defaultBorderRadius: CGFloat {
+        switch self {
+        case .sm:
+            return 32
+        case .md, .line, .pulseInner, .pulseOutside:
+            return 16
+        }
+    }
+
+    var borderWidth: CGFloat {
+        1
+    }
+
+    var defaultDuration: Double {
+        switch self {
+        case .line:
+            return 3.1
+        case .pulseInner, .pulseOutside:
+            return 2.3
+        case .sm, .md:
+            return 1.96
+        }
+    }
+
+    var bloomBlur: CGFloat {
+        switch self {
+        case .pulseOutside:
+            return 13
+        case .pulseInner:
+            return 7
+        case .line, .sm, .md:
+            return 9
+        }
+    }
+}
+
+private enum BorderBeamColorVariant {
+    case colorful
+    case mono
+    case ocean
+    case sunset
+
+    func colors(for theme: BorderBeamTheme) -> [Color] {
+        switch self {
+        case .colorful:
+            return [
+                Color(red: 0.05, green: 0.70, blue: 0.78),
+                Color(red: 0.30, green: 0.76, blue: 0.48),
+                Color(red: 0.95, green: 0.64, blue: 0.16),
+                Color(red: 0.98, green: 0.16, blue: 0.40),
+                Color(red: 0.70, green: 0.20, blue: 0.88),
+                Color(red: 0.20, green: 0.36, blue: 0.95),
+                Color(red: 0.05, green: 0.70, blue: 0.78)
+            ]
+        case .mono:
+            return [
+                Color(uiColor: theme == .light ? .systemGray2 : .systemGray4),
+                Color(uiColor: theme == .light ? .systemGray : .systemGray2),
+                Color(uiColor: theme == .light ? .systemGray2 : .systemGray4)
+            ]
+        case .ocean:
+            return [
+                Color(uiColor: .systemCyan),
+                Color(uiColor: .systemBlue),
+                Color(uiColor: .systemIndigo),
+                Color(uiColor: .systemPurple),
+                Color(uiColor: .systemCyan)
+            ]
+        case .sunset:
+            return [
+                Color(uiColor: .systemOrange),
+                Color(uiColor: .systemYellow),
+                Color(uiColor: .systemPink),
+                Color(uiColor: .systemRed),
+                Color(uiColor: .systemOrange)
+            ]
+        }
+    }
+}
+
+private enum BorderBeamTheme {
+    case dark
+    case light
+    case auto
+}
+
+private struct BorderBeamThemePreset {
+    let strokeOpacity: Double
+    let innerOpacity: Double
+    let bloomOpacity: Double
+    let brightness: Double
+    let saturation: Double
+
+    static func preset(size: BorderBeamSize, theme: BorderBeamTheme) -> BorderBeamThemePreset {
+        let resolvedTheme: BorderBeamTheme = theme == .auto ? .light : theme
+
+        switch (size, resolvedTheme) {
+        case (.pulseOutside, .dark):
+            return BorderBeamThemePreset(strokeOpacity: 0.94, innerOpacity: 0.34, bloomOpacity: 0.30, brightness: 1.9, saturation: 1.2)
+        case (.pulseOutside, _):
+            return BorderBeamThemePreset(strokeOpacity: 0.34, innerOpacity: 0.10, bloomOpacity: 0.24, brightness: 1.08, saturation: 0.82)
+        case (.pulseInner, .dark):
+            return BorderBeamThemePreset(strokeOpacity: 1.0, innerOpacity: 0.44, bloomOpacity: 0.66, brightness: 0.75, saturation: 1.2)
+        case (.pulseInner, _):
+            return BorderBeamThemePreset(strokeOpacity: 0.32, innerOpacity: 0.40, bloomOpacity: 0.80, brightness: 1.3, saturation: 0.75)
+        case (.sm, .dark):
+            return BorderBeamThemePreset(strokeOpacity: 0.46, innerOpacity: 0.24, bloomOpacity: 0.38, brightness: 1.3, saturation: 1.2)
+        case (.sm, _):
+            return BorderBeamThemePreset(strokeOpacity: 0.12, innerOpacity: 0.30, bloomOpacity: 0.16, brightness: 1.3, saturation: 1.8)
+        case (.line, .dark):
+            return BorderBeamThemePreset(strokeOpacity: 1.0, innerOpacity: 0.70, bloomOpacity: 0.80, brightness: 1.3, saturation: 1.2)
+        case (.line, _):
+            return BorderBeamThemePreset(strokeOpacity: 0.16, innerOpacity: 0.32, bloomOpacity: 0.30, brightness: 1.3, saturation: 1.95)
+        case (.md, .dark):
+            return BorderBeamThemePreset(strokeOpacity: 0.26, innerOpacity: 0.42, bloomOpacity: 0.24, brightness: 1.3, saturation: 1.2)
+        case (.md, _):
+            return BorderBeamThemePreset(strokeOpacity: 0.12, innerOpacity: 0.26, bloomOpacity: 0.34, brightness: 1.3, saturation: 1.5)
+        }
+    }
+}
+
+private struct BorderBeamModifier: ViewModifier {
+    let active: Bool
+    let size: BorderBeamSize
+    let colorVariant: BorderBeamColorVariant
+    let theme: BorderBeamTheme
+    let strength: Double
+    let duration: Double?
+    let borderRadius: CGFloat?
+    let brightness: Double?
+    let saturation: Double?
+    let hueRange: Double
+    let staticColors: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var resolvedRadius: CGFloat {
+        borderRadius ?? size.defaultBorderRadius
+    }
+
+    private var resolvedDuration: Double {
+        duration ?? size.defaultDuration
+    }
+
+    private var clampedStrength: Double {
+        min(max(strength, 0), 1)
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                if active && size == .pulseOutside {
+                    pulseLayer(kind: .outsideBloom)
+                }
+            }
+            .overlay {
+                if active {
+                    pulseLayer(kind: .stroke)
+                }
+            }
+    }
+
+    @ViewBuilder
+    private func pulseLayer(kind: BorderBeamLayerKind) -> some View {
+        let preset = BorderBeamThemePreset.preset(size: size, theme: theme)
+        let finalBrightness = brightness ?? preset.brightness
+        let finalSaturation = saturation ?? preset.saturation
+
+        TimelineView(.animation) { timeline in
+            let rawProgress = reduceMotion ? 0.65 : pulseProgress(at: timeline.date)
+            let linearProgress = reduceMotion ? 0.18 : cycleProgress(at: timeline.date)
+            let breath = 0.50 + rawProgress * 0.50
+            let opacity = clampedStrength * breath
+            let colors = colorVariant.colors(for: theme)
+            let gradient = AngularGradient(
+                colors: colors,
+                center: .center,
+                angle: .degrees(staticColors ? 0 : linearProgress * hueRange)
+            )
+            let shape = RoundedRectangle(cornerRadius: resolvedRadius, style: .continuous)
+
+            ZStack {
+                if kind == .outsideBloom {
+                    shape
+                        .stroke(gradient, lineWidth: outsideBloomLineWidth)
+                        .blur(radius: size.bloomBlur + CGFloat(rawProgress * 1.8))
+                        .scaleEffect(1.010 + rawProgress * 0.007)
+                        .opacity(min(1, preset.bloomOpacity * opacity * finalBrightness))
+                        .saturation(finalSaturation)
+                }
+
+                if kind == .stroke {
+                    shape
+                        .stroke(gradient, lineWidth: crispStrokeWidth)
+                        .opacity(min(1, preset.strokeOpacity * opacity * finalBrightness))
+                        .saturation(finalSaturation)
+
+                    if size != .pulseOutside {
+                        shape
+                            .stroke(gradient, lineWidth: size.borderWidth + 2.5)
+                            .blur(radius: size == .pulseInner ? 3.8 + CGFloat(rawProgress * 1.8) : 6.5)
+                            .opacity(min(1, preset.innerOpacity * opacity * finalBrightness))
+                            .saturation(finalSaturation)
+                            .blendMode(.screen)
+                    }
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
+    private var crispStrokeWidth: CGFloat {
+        switch size {
+        case .pulseOutside:
+            return size.borderWidth + 0.25
+        case .pulseInner:
+            return size.borderWidth + 0.8
+        case .sm, .md, .line:
+            return size.borderWidth + 0.8
+        }
+    }
+
+    private var outsideBloomLineWidth: CGFloat {
+        switch size {
+        case .pulseOutside:
+            return size.borderWidth + 5.5
+        case .pulseInner:
+            return size.borderWidth + 3
+        case .sm, .md, .line:
+            return size.borderWidth + 3.5
+        }
+    }
+
+    private func pulseProgress(at date: Date) -> Double {
+        let position = cycleProgress(at: date)
+        return (sin(position * .pi * 2 - .pi / 2) + 1) / 2
+    }
+
+    private func cycleProgress(at date: Date) -> Double {
+        let cycle = max(resolvedDuration, 0.1)
+        return date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: cycle) / cycle
+    }
+}
+
+private enum BorderBeamLayerKind {
+    case stroke
+    case outsideBloom
+}
+
+private extension View {
+    func borderBeam(
+        active: Bool = true,
+        size: BorderBeamSize = .md,
+        colorVariant: BorderBeamColorVariant = .colorful,
+        theme: BorderBeamTheme = .dark,
+        strength: Double = 1,
+        duration: Double? = nil,
+        borderRadius: CGFloat? = nil,
+        brightness: Double? = nil,
+        saturation: Double? = nil,
+        hueRange: Double = 30,
+        staticColors: Bool = false
+    ) -> some View {
+        modifier(
+            BorderBeamModifier(
+                active: active,
+                size: size,
+                colorVariant: colorVariant,
+                theme: theme,
+                strength: strength,
+                duration: duration,
+                borderRadius: borderRadius,
+                brightness: brightness,
+                saturation: saturation,
+                hueRange: hueRange,
+                staticColors: staticColors
+            )
+        )
+    }
+}
+
 private struct FinalCandidateComparisonView: View {
     let candidates: [FinalDerivationCandidate]
     @Binding var selectedCandidateID: String?
@@ -3238,6 +3526,7 @@ private struct FinalCandidateComparisonView: View {
     let onShowEliminated: () -> Void
     let onRestart: () -> Void
     @State private var detailCandidate: FinalDerivationCandidate?
+    @State private var didRevealCandidates = false
 
     private var selectedCandidate: FinalDerivationCandidate? {
         candidates.first { $0.id == selectedCandidateID }
@@ -3245,35 +3534,44 @@ private struct FinalCandidateComparisonView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("가장 안정적인 시간을 먼저 보여드려요.")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .opacity(didRevealCandidates ? 1 : 0)
+                    .offset(y: didRevealCandidates ? 0 : 8)
+
+                VStack(spacing: 10) {
                     ForEach(Array(candidates.prefix(2).enumerated()), id: \.element.id) { index, candidate in
                         FinalCandidateDetailCard(
                             candidate: candidate,
                             calendar: calendar,
                             isSelected: selectedCandidateID == candidate.id,
                             onSelect: {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
-                                    selectedCandidateID = candidate.id
+                                if selectedCandidateID == candidate.id {
+                                    detailCandidate = candidate
+                                } else {
+                                    selectCandidate(candidate)
                                 }
-                            },
-                            onShowDetails: {
-                                detailCandidate = candidate
                             }
                         )
                         .frame(maxWidth: .infinity)
-                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                        .opacity(didRevealCandidates ? 1 : 0)
+                        .offset(y: didRevealCandidates ? 0 : 18)
                         .animation(
-                            .spring(response: 0.52, dampingFraction: 0.9)
-                                .delay(Double(index) * 0.08),
-                            value: candidates.map(\.id)
+                            .spring(response: 0.58, dampingFraction: 0.88)
+                                .delay(0.08 + Double(index) * 0.09),
+                            value: didRevealCandidates
                         )
+                        .animation(.interactiveSpring(response: 0.46, dampingFraction: 0.9, blendDuration: 0.08), value: selectedCandidateID)
                     }
                 }
                 .padding(.vertical, 2)
+                .animation(.interactiveSpring(response: 0.42, dampingFraction: 0.86, blendDuration: 0.12), value: selectedCandidateID)
 
                 Button(action: onShowEliminated) {
-                    Label("검토 후보 보기", systemImage: "line.3.horizontal.decrease.circle")
+                    Label("제외된 일정 보기", systemImage: "line.3.horizontal.decrease.circle")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color(uiColor: .systemBlue))
                         .padding(.horizontal, 10)
@@ -3282,6 +3580,9 @@ private struct FinalCandidateComparisonView: View {
                 }
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .opacity(didRevealCandidates ? 1 : 0)
+                .offset(y: didRevealCandidates ? 0 : 8)
+                .animation(.easeOut(duration: 0.35).delay(0.25), value: didRevealCandidates)
             }
             .padding(.horizontal, LayoutMetrics.horizontalPadding)
 
@@ -3299,23 +3600,32 @@ private struct FinalCandidateComparisonView: View {
                 .buttonStyle(.plain)
 
                 Button {
-                    if selectedCandidateID == nil {
-                        selectedCandidateID = candidates.first?.id
-                    }
+                    print("Confirm final candidate: \(selectedCandidateID ?? "none")")
                 } label: {
                     Text(confirmButtonTitle)
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(selectedCandidateID == nil ? Color(uiColor: .secondaryLabel) : Color.white)
                         .frame(maxWidth: .infinity)
                         .frame(height: 46)
-                        .background(Color(uiColor: .systemBlue), in: Capsule())
+                        .background(selectedCandidateID == nil ? Color(uiColor: .tertiarySystemFill) : Color(uiColor: .systemBlue), in: Capsule())
                 }
                 .buttonStyle(.plain)
+                .disabled(selectedCandidateID == nil)
             }
             .padding(.horizontal, LayoutMetrics.horizontalPadding)
             .padding(.bottom, 8)
         }
         .frame(maxHeight: .infinity, alignment: .top)
+        .onAppear {
+            if selectedCandidateID == nil {
+                selectedCandidateID = candidates.first?.id
+            }
+
+            didRevealCandidates = false
+            withAnimation(.easeOut(duration: 0.32).delay(0.05)) {
+                didRevealCandidates = true
+            }
+        }
         .sheet(item: $detailCandidate) { candidate in
             FinalCandidateDetailSheet(
                 candidate: candidate,
@@ -3328,10 +3638,16 @@ private struct FinalCandidateComparisonView: View {
 
     private var confirmButtonTitle: String {
         guard let selectedCandidate else {
-            return "일정 확정하기"
+            return "후보를 선택해 주세요"
         }
 
-        return selectedCandidate.rank == 0 ? "추천안 확정하기" : "대안 확정하기"
+        return selectedCandidate.rank == 0 ? "추천안 A 확정하기" : "추천안 B 확정하기"
+    }
+
+    private func selectCandidate(_ candidate: FinalDerivationCandidate) {
+        withAnimation(.interactiveSpring(response: 0.36, dampingFraction: 0.84, blendDuration: 0.1)) {
+            selectedCandidateID = candidate.id
+        }
     }
 }
 
@@ -3340,97 +3656,213 @@ private struct FinalCandidateDetailCard: View {
     let calendar: Calendar
     let isSelected: Bool
     let onSelect: () -> Void
-    let onShowDetails: () -> Void
 
     private var tint: Color {
         candidate.rank == 0 ? Color(uiColor: .systemBlue) : Color(uiColor: .systemIndigo)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            HStack(alignment: .center) {
-                Text(candidate.rank == 0 ? "추천안" : "대안")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(tint)
-                    .padding(.horizontal, 8)
-                    .frame(height: 25)
-                    .background(tint.opacity(0.1), in: Capsule())
+        VStack(alignment: .leading, spacing: isSelected ? 14 : 7) {
+            headerRow
 
-                Spacer(minLength: 0)
-
-                Image(systemName: "chevron.up.forward")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(.secondary)
+            if isSelected {
+                expandedTimeSummary
+                expandedDetails
+            } else {
+                collapsedSummary
             }
+        }
+        .padding(isSelected ? 14 : 12)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .clipped()
+        .background(
+            (isSelected ? tint.opacity(0.045) : Color(uiColor: .secondarySystemBackground)),
+            in: RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
+                .stroke(isSelected ? tint.opacity(0.42) : Color(uiColor: .separator).opacity(0.08), lineWidth: isSelected ? 1.25 : 0.7)
+        }
+        .borderBeam(
+            active: isSelected,
+            size: .pulseOutside,
+            colorVariant: .colorful,
+            theme: .light,
+            strength: 0.46,
+            duration: 3.2,
+            borderRadius: cardRadius,
+            brightness: 1.08,
+            saturation: 0.82,
+            hueRange: 70
+        )
+        .contentShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
+        .onTapGesture {
+            onSelect()
+        }
+        .animation(.interactiveSpring(response: 0.46, dampingFraction: 0.9, blendDuration: 0.08), value: isSelected)
+    }
 
-            VStack(alignment: .leading, spacing: 4) {
+    private var headerRow: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Text(candidate.rank == 0 ? "추천안 A" : "추천안 B")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(tint)
+                .padding(.horizontal, 8)
+                .frame(height: 25)
+                .background(tint.opacity(0.1), in: Capsule())
+
+            Text(headerTitle)
+                .font(.system(size: isSelected ? 13 : 14, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(isSelected ? .secondary : .primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+
+            Spacer(minLength: 8)
+
+            if isSelected {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color(uiColor: .tertiaryLabel))
+            } else {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Color(uiColor: .tertiaryLabel))
+            }
+        }
+    }
+
+    private var expandedTimeSummary: some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 5) {
                 Text(candidate.slot.fullDateText(calendar: calendar))
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.primary)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.78)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
 
                 Text(candidate.slot.timeRangeText)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 24, weight: .semibold))
                     .monospacedDigit()
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
             }
 
-            if candidate.summary.requiredUnavailableCount == 0 {
-                requiredEvidencePill
-            }
+            Spacer(minLength: 12)
 
+            attendanceBadge
+        }
+    }
+
+    private var expandedDetails: some View {
+        VStack(alignment: .leading, spacing: 11) {
             FinalCandidateInsightPillRow(
                 insights: supportingInsights,
                 maxVisible: 2
             )
 
-            HStack(spacing: 6) {
-                FinalCandidateSummaryPill(
-                    title: "참석",
-                    value: "\(candidate.summary.availableCount + candidate.summary.burdenCount)",
-                    tint: Color(uiColor: .systemBlue)
-                )
-                FinalCandidateSummaryPill(
-                    title: "부담",
-                    value: "\(candidate.summary.burdenCount)",
-                    tint: candidate.summary.burdenCount > 0 ? Color(uiColor: .systemOrange) : Color(uiColor: .systemTeal)
-                )
-            }
+            participantSummary
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(isSelected ? Color(uiColor: .systemBlue).opacity(0.36) : Color(uiColor: .separator).opacity(0.08), lineWidth: isSelected ? 1.2 : 0.7)
+    }
+
+    private var collapsedSummary: some View {
+        HStack(spacing: 6) {
+            Image(systemName: candidate.summary.burdenMembers.isEmpty ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(candidate.summary.burdenMembers.isEmpty ? Color(uiColor: .systemGreen) : Color(uiColor: .systemOrange))
+
+            Text(collapsedSummaryText)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
         }
-        .scaleEffect(isSelected ? 0.985 : 1)
-        .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .onTapGesture {
-            onSelect()
-            onShowDetails()
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var cardRadius: CGFloat {
+        22
     }
 
     private var supportingInsights: [FinalCandidateInsight] {
         candidate.selectionInsights.filter { $0.title != "필참 전원 가능" }
     }
 
-    private var requiredEvidencePill: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "person.2.badge.checkmark.fill")
-                .font(.system(size: 10, weight: .bold))
+    private var headerTitle: String {
+        if isSelected {
+            return candidate.slot.fullDateText(calendar: calendar)
+        }
 
-            Text("필참 전원 가능")
-                .font(.system(size: 12, weight: .semibold))
+        return "\(candidate.slot.compactDayText(calendar: calendar)) · \(candidate.slot.timeRangeText)"
+    }
+
+    private var attendanceBadge: some View {
+        VStack(alignment: .trailing, spacing: 5) {
+            HStack(spacing: 5) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+
+                Text("전원 참석")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundStyle(Color(uiColor: .systemGreen))
+            .padding(.horizontal, 9)
+            .frame(height: 27)
+            .background(Color(uiColor: .systemGreen).opacity(0.1), in: Capsule())
+
+            Text("\(candidate.summary.availableCount + candidate.summary.burdenCount)/\(candidate.summary.totalCount) 응답 기준")
+                .font(.system(size: 10, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(Color(uiColor: .tertiaryLabel))
                 .lineLimit(1)
         }
-        .foregroundStyle(Color(uiColor: .systemGreen))
-        .padding(.horizontal, 9)
-        .frame(height: 26)
-        .background(Color(uiColor: .systemGreen).opacity(0.12), in: Capsule())
-        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var participantSummary: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
+                Text("참석자")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                Text("필참 전원 가능")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color(uiColor: .systemGreen))
+                    .padding(.horizontal, 7)
+                    .frame(height: 22)
+                    .background(Color(uiColor: .systemGreen).opacity(0.1), in: Capsule())
+
+                Spacer(minLength: 0)
+            }
+
+            HStack(alignment: .center, spacing: 8) {
+                AvatarStack(
+                    names: candidate.attendeeNames,
+                    maxVisible: 6,
+                    size: 26,
+                    borderColor: isSelected ? tint.opacity(0.045) : Color(uiColor: .secondarySystemBackground)
+                )
+
+                Text("\(candidate.summary.totalCount)명")
+                    .font(.system(size: 12, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    private var collapsedSummaryText: String {
+        if candidate.summary.burdenMembers.isEmpty {
+            return "부담 없음"
+        }
+
+        return "부담 있음"
     }
 }
 
@@ -9792,6 +10224,8 @@ private struct ProfileAvatar: View {
 private struct AvatarStack: View {
     let names: [String]
     var maxVisible: Int = 5
+    var size: CGFloat = 28
+    var borderColor: Color = Color(uiColor: .secondarySystemBackground)
 
     private var visibleNames: [String] {
         Array(names.prefix(max(maxVisible, 0)))
@@ -9807,9 +10241,9 @@ private struct AvatarStack: View {
                 ProfileAvatar(
                     name: name,
                     fallback: ProfileAsset.fallbackText(for: name),
-                    size: 28,
+                    size: size,
                     tint: Self.colors[index % Self.colors.count],
-                    borderColor: Color(uiColor: .secondarySystemBackground),
+                    borderColor: borderColor,
                     borderWidth: 2
                 )
             }
@@ -9818,15 +10252,15 @@ private struct AvatarStack: View {
                 Text("+\(overflowCount)")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 28, height: 28)
+                    .frame(width: size, height: size)
                     .background(Color(uiColor: .tertiarySystemFill), in: Circle())
                     .overlay {
                         Circle()
-                            .stroke(Color(uiColor: .secondarySystemBackground), lineWidth: 2)
+                            .stroke(borderColor, lineWidth: 2)
                     }
             }
         }
-        .frame(height: 28)
+        .frame(height: size)
     }
 
     static let colors = [
