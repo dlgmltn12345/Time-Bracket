@@ -2901,8 +2901,8 @@ private struct BracketReviewScreen: View {
             ]
         case .final:
             var chips = [
-                DerivationPhaseChip(title: "추천 2안", symbolName: "sparkles", color: Color(uiColor: .systemBlue)),
-                DerivationPhaseChip(title: meeting.derivationCriteria.priority.title, symbolName: "slider.horizontal.3", color: Color(uiColor: .systemIndigo))
+                DerivationPhaseChip(title: "추천 2안", symbolName: "sparkles", color: Color(uiColor: .systemBlue), style: .summary),
+                DerivationPhaseChip(title: meeting.derivationCriteria.priority.title, symbolName: "checkmark.seal.fill", color: Color(uiColor: .systemGreen), style: .summary)
             ]
 
             if let preferenceChip = timePreferenceChip {
@@ -2922,25 +2922,26 @@ private struct BracketReviewScreen: View {
                 DerivationPhaseChip(
                     title: meeting.excludedTimeRule.title,
                     symbolName: "clock.badge.xmark.fill",
-                    color: neutralColor
+                    color: neutralColor,
+                    style: .criterion
                 )
             )
         }
 
         if meeting.derivationCriteria.avoidsAfterLunch {
-            chips.append(DerivationPhaseChip(title: "점심 직후 제외", symbolName: "fork.knife", color: neutralColor))
+            chips.append(DerivationPhaseChip(title: "점심 직후 제외", symbolName: "fork.knife", color: neutralColor, style: .criterion))
         }
 
         if meeting.derivationCriteria.avoidsNearLeaving {
-            chips.append(DerivationPhaseChip(title: "퇴근 직전 제외", symbolName: "moon.zzz.fill", color: neutralColor))
+            chips.append(DerivationPhaseChip(title: "퇴근 직전 제외", symbolName: "moon.zzz.fill", color: neutralColor, style: .criterion))
         }
 
         if meeting.derivationCriteria.avoidsEarlyMorning {
-            chips.append(DerivationPhaseChip(title: "첫 시간 제외", symbolName: "sunrise.fill", color: neutralColor))
+            chips.append(DerivationPhaseChip(title: "첫 시간 제외", symbolName: "sunrise.fill", color: neutralColor, style: .criterion))
         }
 
         if chips.isEmpty {
-            chips.append(DerivationPhaseChip(title: "기본 기준", symbolName: "slider.horizontal.3", color: neutralColor))
+            chips.append(DerivationPhaseChip(title: "기본 기준", symbolName: "slider.horizontal.3", color: neutralColor, style: .criterion))
         }
 
         return Array(chips.prefix(3))
@@ -2954,7 +2955,8 @@ private struct BracketReviewScreen: View {
         return DerivationPhaseChip(
             title: "\(meeting.derivationCriteria.timePreference.title) 우선",
             symbolName: "clock.fill",
-            color: Color(uiColor: .systemBlue)
+            color: Color(uiColor: .systemBlue),
+            style: .summary
         )
     }
 
@@ -3088,10 +3090,17 @@ private struct DerivationPhaseChip: Identifiable {
     let title: String
     let symbolName: String
     let color: Color
+    var style: DerivationPhaseChipStyle = .semantic
 
     var id: String {
         "\(title)-\(symbolName)"
     }
+}
+
+private enum DerivationPhaseChipStyle {
+    case semantic
+    case criterion
+    case summary
 }
 
 private struct DerivationPhaseChipRow: View {
@@ -3129,18 +3138,59 @@ private struct DerivationPhaseChipView: View {
             Image(systemName: chip.symbolName)
                 .font(.system(size: 10, weight: .bold))
                 .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(iconColor)
 
             Text(chip.title)
                 .font(.system(size: 12, weight: .semibold))
                 .lineLimit(1)
+                .foregroundStyle(textColor)
         }
-        .foregroundStyle(chip.color)
         .padding(.horizontal, 9)
         .frame(height: 28)
-        .background(chip.color.opacity(0.1), in: Capsule())
+        .background(backgroundColor, in: Capsule())
         .overlay {
             Capsule()
-                .stroke(chip.color.opacity(0.12), lineWidth: 0.7)
+                .stroke(strokeColor, lineWidth: 0.7)
+        }
+    }
+
+    private var iconColor: Color {
+        switch chip.style {
+        case .semantic:
+            return chip.color
+        case .criterion:
+            return chip.color.opacity(0.82)
+        case .summary:
+            return chip.color
+        }
+    }
+
+    private var textColor: Color {
+        switch chip.style {
+        case .semantic:
+            return chip.color
+        case .criterion, .summary:
+            return Color(uiColor: .label)
+        }
+    }
+
+    private var backgroundColor: Color {
+        switch chip.style {
+        case .semantic:
+            return chip.color.opacity(0.1)
+        case .criterion:
+            return Color(uiColor: .secondarySystemBackground)
+        case .summary:
+            return Color(uiColor: .secondarySystemBackground)
+        }
+    }
+
+    private var strokeColor: Color {
+        switch chip.style {
+        case .semantic:
+            return chip.color.opacity(0.12)
+        case .criterion, .summary:
+            return Color(uiColor: .separator).opacity(0.08)
         }
     }
 }
@@ -3240,9 +3290,9 @@ private struct FinalDerivationCandidate: Identifiable {
         } else if summary.weightedBurdenScore <= 2 {
             insights.append(
                 FinalCandidateInsight(
-                    title: "부담 낮음",
-                    symbolName: "arrow.down.heart.fill",
-                    color: Color(uiColor: .systemTeal)
+                    title: "부담 \(summary.burdenCount)명 확인",
+                    symbolName: "exclamationmark.triangle.fill",
+                    color: Color(uiColor: .systemOrange)
                 )
             )
         } else {
@@ -3620,6 +3670,7 @@ private struct FinalCandidateComparisonView: View {
     let onRestart: () -> Void
     @State private var detailCandidate: FinalDerivationCandidate?
     @State private var didRevealCandidates = false
+    @State private var didCompleteCandidateIntro = false
 
     private var selectedCandidate: FinalDerivationCandidate? {
         candidates.first { $0.id == selectedCandidateID }
@@ -3633,8 +3684,12 @@ private struct FinalCandidateComparisonView: View {
                         FinalCandidateDetailCard(
                             candidate: candidate,
                             calendar: calendar,
-                            isSelected: selectedCandidateID == candidate.id,
+                            isSelected: didCompleteCandidateIntro && selectedCandidateID == candidate.id,
                             onSelect: {
+                                guard didCompleteCandidateIntro else {
+                                    return
+                                }
+
                                 if selectedCandidateID == candidate.id {
                                     detailCandidate = candidate
                                 } else {
@@ -3644,16 +3699,16 @@ private struct FinalCandidateComparisonView: View {
                         )
                         .frame(maxWidth: .infinity)
                         .opacity(didRevealCandidates ? 1 : 0)
-                        .offset(y: didRevealCandidates ? 0 : 18)
                         .animation(
-                            .spring(response: 0.58, dampingFraction: 0.88)
-                                .delay(0.08 + Double(index) * 0.09),
+                            .easeInOut(duration: 0.46)
+                                .delay(0.10 + Double(index) * 0.16),
                             value: didRevealCandidates
                         )
                         .animation(.interactiveSpring(response: 0.46, dampingFraction: 0.9, blendDuration: 0.08), value: selectedCandidateID)
                     }
                 }
                 .padding(.vertical, 2)
+                .animation(.interactiveSpring(response: 0.42, dampingFraction: 0.86, blendDuration: 0.12), value: didCompleteCandidateIntro)
                 .animation(.interactiveSpring(response: 0.42, dampingFraction: 0.86, blendDuration: 0.12), value: selectedCandidateID)
 
                 Button(action: onShowEliminated) {
@@ -3672,44 +3727,48 @@ private struct FinalCandidateComparisonView: View {
             }
             .padding(.horizontal, LayoutMetrics.horizontalPadding)
 
-            Spacer(minLength: 18)
+            Spacer(minLength: 20)
 
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 Button(action: onRestart) {
-                    Label("다시하기", systemImage: "arrow.counterclockwise")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                    Text("다시하기")
                         .frame(maxWidth: .infinity)
-                        .frame(height: 46)
-                        .background(Color(uiColor: .secondarySystemBackground), in: Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .tint(Color(uiColor: .secondaryLabel))
 
                 Button {
                     print("Confirm final candidate: \(selectedCandidateID ?? "none")")
                 } label: {
                     Text(confirmButtonTitle)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(selectedCandidateID == nil ? Color(uiColor: .secondaryLabel) : Color.white)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 46)
-                        .background(selectedCandidateID == nil ? Color(uiColor: .tertiarySystemFill) : Color(uiColor: .systemBlue), in: Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .tint(selectedCandidateID == nil ? Color(uiColor: .tertiarySystemFill) : Color(uiColor: .systemBlue))
                 .disabled(selectedCandidateID == nil)
             }
             .padding(.horizontal, LayoutMetrics.horizontalPadding)
-            .padding(.bottom, 8)
+            .padding(.bottom, 10)
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .onAppear {
+            didRevealCandidates = false
+            didCompleteCandidateIntro = false
+
             if selectedCandidateID == nil {
                 selectedCandidateID = candidates.first?.id
             }
 
-            didRevealCandidates = false
-            withAnimation(.easeOut(duration: 0.32).delay(0.05)) {
+            withAnimation(.easeInOut(duration: 0.38).delay(0.04)) {
                 didRevealCandidates = true
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.66) {
+                withAnimation(.interactiveSpring(response: 0.48, dampingFraction: 0.9, blendDuration: 0.08)) {
+                    didCompleteCandidateIntro = true
+                }
             }
         }
         .sheet(item: $detailCandidate) { candidate in
@@ -3718,6 +3777,7 @@ private struct FinalCandidateComparisonView: View {
                 calendar: calendar
             )
             .presentationDetents([.large])
+            .presentationBackground(Color(uiColor: .systemGroupedBackground))
             .presentationDragIndicator(.visible)
         }
     }
@@ -3998,13 +4058,14 @@ private struct FinalCandidateInsightPillRow: View {
                 Image(systemName: insight.symbolName)
                     .font(.system(size: 9, weight: .bold))
                     .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(insight.color)
 
                 Text(insight.title)
                     .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
             }
-            .foregroundStyle(insight.color)
             .padding(.horizontal, 8)
             .frame(height: 25)
             .background(insight.color.opacity(0.1), in: Capsule())
@@ -4057,11 +4118,11 @@ private struct FinalCandidateDetailSheet: View {
                         tint: Color(uiColor: .systemBlue),
                         isExpanded: $isInsightExpanded
                     ) {
-                        FinalCandidateInsightPillRow(
-                            insights: candidate.selectionInsights,
-                            maxVisible: 3,
-                            axis: .horizontal
-                        )
+                        VStack(spacing: 8) {
+                            ForEach(candidate.selectionInsights) { insight in
+                                insightReasonRow(insight)
+                            }
+                        }
                     }
 
                     accordionSection(
@@ -4071,13 +4132,15 @@ private struct FinalCandidateDetailSheet: View {
                         tint: Color(uiColor: .systemGreen),
                         isExpanded: $isParticipantExpanded
                     ) {
-                        VStack(spacing: 0) {
-                            ForEach(Array(attendeeRows.enumerated()), id: \.offset) { index, row in
-                                attendeeRow(row)
+                        detailInnerCard(verticalPadding: 4, horizontalPadding: 10) {
+                            VStack(spacing: 0) {
+                                ForEach(Array(attendeeRows.enumerated()), id: \.offset) { index, row in
+                                    attendeeRow(row)
 
-                                if index < attendeeRows.count - 1 {
-                                    Divider()
-                                        .padding(.leading, 46)
+                                    if index < attendeeRows.count - 1 {
+                                        Divider()
+                                            .padding(.leading, 46)
+                                    }
                                 }
                             }
                         }
@@ -4121,7 +4184,7 @@ private struct FinalCandidateDetailSheet: View {
                 .padding(.top, 14)
                 .padding(.bottom, 28)
             }
-            .background(Color(uiColor: .systemBackground))
+            .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("추천안 상세")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -4133,6 +4196,7 @@ private struct FinalCandidateDetailSheet: View {
                 }
             }
         }
+        .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
     }
 
     private var summaryHeader: some View {
@@ -4183,7 +4247,11 @@ private struct FinalCandidateDetailSheet: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(Color(uiColor: .separator).opacity(0.08), lineWidth: 0.7)
+        }
     }
 
     private var burdenAccordionSubtitle: String {
@@ -4191,12 +4259,7 @@ private struct FinalCandidateDetailSheet: View {
             return "부담 응답 없음"
         }
 
-        let categoryText = candidate.summary.burdenCategorySummaries
-            .prefix(2)
-            .map { "\($0.category.title) \($0.count)" }
-            .joined(separator: " · ")
-
-        return categoryText.isEmpty ? "부담 \(candidate.summary.burdenCount)명" : categoryText
+        return "부담 \(candidate.summary.burdenCount)명 확인"
     }
 
     private var unavailableAccordionSubtitle: String {
@@ -4275,7 +4338,11 @@ private struct FinalCandidateDetailSheet: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color(uiColor: .separator).opacity(0.08), lineWidth: 0.7)
+        }
     }
 
     private func insightReasonRow(_ insight: FinalCandidateInsight) -> some View {
@@ -4301,7 +4368,7 @@ private struct FinalCandidateDetailSheet: View {
             Spacer(minLength: 0)
         }
         .padding(10)
-        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     private func attendeeRow(_ row: FinalCandidateAttendeeRowModel) -> some View {
@@ -4322,6 +4389,10 @@ private struct FinalCandidateDetailSheet: View {
                     Text("· 필참")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
+                } else {
+                    Text("· 선택")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -4335,6 +4406,24 @@ private struct FinalCandidateDetailSheet: View {
                 .background(row.tint.opacity(0.1), in: Capsule())
         }
         .frame(height: 48)
+    }
+
+    private func detailInnerCard<Content: View>(
+        verticalPadding: CGFloat = 12,
+        horizontalPadding: CGFloat = 12,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, verticalPadding)
+        .padding(.horizontal, horizontalPadding)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color(uiColor: .separator).opacity(0.1), lineWidth: 0.7)
+        }
     }
 
     private func reasonDetailRow(member: TeamResponseReason, status: String, tint: Color) -> some View {
@@ -4358,19 +4447,11 @@ private struct FinalCandidateDetailSheet: View {
                             .foregroundStyle(.secondary)
                     }
 
+                    Text(status == "부담" ? member.category.burdenTitle : status)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(tint)
+
                     Spacer(minLength: 0)
-
-                    HStack(spacing: 4) {
-                        Image(systemName: status == "부담" ? member.category.symbolName : "xmark.circle.fill")
-                            .font(.system(size: 9, weight: .bold))
-
-                        Text(status == "부담" ? member.category.burdenTitle : status)
-                            .font(.system(size: 11, weight: .semibold))
-                    }
-                    .foregroundStyle(tint)
-                    .padding(.horizontal, 8)
-                    .frame(height: 22)
-                    .background(tint.opacity(0.1), in: Capsule())
                 }
 
                 Text(member.displayReason)
@@ -4381,7 +4462,11 @@ private struct FinalCandidateDetailSheet: View {
             }
         }
         .padding(10)
-        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color(uiColor: .separator).opacity(0.1), lineWidth: 0.7)
+        }
     }
 
     private func emptyStateText(_ text: String) -> some View {
@@ -4390,7 +4475,11 @@ private struct FinalCandidateDetailSheet: View {
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
-            .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color(uiColor: .separator).opacity(0.1), lineWidth: 0.7)
+            }
     }
 
     private func insightDetailText(for insight: FinalCandidateInsight) -> String {
@@ -4403,11 +4492,21 @@ private struct FinalCandidateDetailSheet: View {
             return "참석 가능 응답만 있어 별도 조정 리스크가 낮습니다."
         case "부담 낮음":
             return "부담 응답은 있지만 사유의 강도가 낮아 조율 가능한 범위입니다."
+        case "오후 선호 반영":
+            return "주최자가 선호한 오후 시간대 조건에 맞는 후보입니다."
+        case let title where title.hasPrefix("부담 "):
+            return "참석은 가능하지만 확인이 필요한 부담 응답이 있습니다."
         case "업무 시간 적합":
             return "아침, 점심 직후, 퇴근 전 시간을 피한 업무 시간대입니다."
         default:
             return "응답 기준에 따라 추천 우선순위에 반영된 항목입니다."
         }
+    }
+
+    private var insightSummaryText: String {
+        candidate.selectionInsights
+            .map { insightDetailText(for: $0) }
+            .joined(separator: "\n")
     }
 }
 
