@@ -263,7 +263,12 @@ private struct MeetingWorkspaceScreen: View {
                     onCompareResponses: onCompareResponses
                 )
             case .bracketReview:
-                BracketReviewScreen(meeting: meeting)
+                BracketReviewScreen(
+                    meeting: meeting,
+                    onAdjustCriteria: { criteria in
+                        onCompareResponses(meeting.id, criteria)
+                    }
+                )
             case .confirmed:
                 ConfirmedMeetingScreen(meeting: meeting)
             }
@@ -2392,11 +2397,14 @@ private struct ResponseCollectionScreen: View {
 
 private struct BracketReviewScreen: View {
     let meeting: HomeMeeting
+    let onAdjustCriteria: (DerivationCriteria) -> Void
+    private let calendar: Calendar
+    private let derivationSlots: [DerivationResponseSlot]
+    private let responseSummaries: [AvailabilitySlot: TeamResponseSummary]
 
     @State private var phase: MeetingDerivationPhase = .preparing
-    @State private var visibleTitleCharacterCount = 0
     @State private var isDetailVisible = false
-    @State private var visibleResponseBlockCount = 0
+    @State private var areResponseBlocksRevealed = false
     @State private var areCriteriaExcludedSlotsDimmed = false
     @State private var areUnavailableSlotsDimmed = false
     @State private var areBurdenHeavySlotsDimmed = false
@@ -2410,11 +2418,30 @@ private struct BracketReviewScreen: View {
     @State private var isRecommendationReady = false
     @State private var selectedFinalCandidateID: String?
     @State private var isEliminatedCandidatesPresented = false
+    @State private var isDerivationCriteriaPresented = false
+    @State private var adjustedCriteria = DerivationCriteria.default
+    @State private var derivationSequenceTask: Task<Void, Never>?
+    @State private var phaseAnimationTask: Task<Void, Never>?
 
-    private var calendar: Calendar {
+    init(
+        meeting: HomeMeeting,
+        onAdjustCriteria: @escaping (DerivationCriteria) -> Void
+    ) {
         var calendar = Calendar.current
         calendar.locale = Locale(identifier: "ko_KR")
-        return calendar
+
+        let slots = DerivationResponseSlot.makeSlots(for: meeting, calendar: calendar)
+        let dates = Array(Set(slots.map(\.date))).sorted()
+
+        self.meeting = meeting
+        self.onAdjustCriteria = onAdjustCriteria
+        self.calendar = calendar
+        self.derivationSlots = slots
+        self.responseSummaries = TeamResponseSummary.makeSummaries(
+            for: meeting,
+            dates: dates,
+            calendar: calendar
+        )
     }
 
     private enum Timing {
@@ -2458,10 +2485,6 @@ private struct BracketReviewScreen: View {
 
     private var sequenceCandidates: [MeetingDecisionCandidate] {
         MeetingDecisionCandidate.makeOnboardingGridCandidates(for: meeting, calendar: calendar)
-    }
-
-    private var derivationSlots: [DerivationResponseSlot] {
-        DerivationResponseSlot.makeSlots(for: meeting, calendar: calendar)
     }
 
     private var criteriaReadySlots: [DerivationResponseSlot] {
@@ -2529,12 +2552,27 @@ private struct BracketReviewScreen: View {
     }
 
     private var finalDerivationSlots: [DerivationResponseSlot] {
-        Array(finalSelectionSourceSlots.sorted(by: isBetterDerivationSlot).prefix(2))
-    }
+        let rankedSlots = finalSelectionSourceSlots.sorted(by: isBetterDerivationSlot)
+        let preferredSlots = rankedSlots.filter(matchesPreferredTime)
+        let selectionPool = preferredSlots.isEmpty ? rankedSlots : preferredSlots
 
-    private var responseSummaries: [AvailabilitySlot: TeamResponseSummary] {
-        let dates = Array(Set(derivationSlots.map(\.date))).sorted()
-        return TeamResponseSummary.makeSummaries(for: meeting, dates: dates, calendar: calendar)
+        guard let first = selectionPool.first else {
+            return []
+        }
+
+        guard rankedSlots.count > 1 else {
+            return [first]
+        }
+
+        let firstProfile = rankProfile(for: first)
+        let diverseTiedSlot = selectionPool.dropFirst().first { slot in
+            rankProfile(for: slot) == firstProfile && !calendar.isDate(slot.date, inSameDayAs: first.date)
+        }
+        let second = diverseTiedSlot
+            ?? selectionPool.dropFirst().first
+            ?? rankedSlots.first { $0.id != first.id }
+
+        return [first, second].compactMap { $0 }
     }
 
     private var finalDerivationCandidates: [FinalDerivationCandidate] {
@@ -2544,11 +2582,15 @@ private struct BracketReviewScreen: View {
                 return nil
             }
 
+            let presentationSummary = summary.finalCandidatePresentationSummary(rank: index)
+
             return FinalDerivationCandidate(
                 rank: index,
                 slot: slot,
-                summary: summary.finalCandidatePresentationSummary(rank: index),
-                score: score(for: slot)
+                summary: presentationSummary,
+                score: score(for: slot),
+                rationale: finalCandidateRationale(for: slot, summary: presentationSummary, rank: index),
+                timePreference: meeting.derivationCriteria.timePreference
             )
         }
     }
@@ -2558,7 +2600,11 @@ private struct BracketReviewScreen: View {
         let requiredUnavailableSlots = removedSlots(from: criteriaReadySlots, keeping: availableCandidateSlots)
         let burdenHeavySlots = removedSlots(from: availableCandidateSlots, keeping: burdenProcessSlots)
         let lowAvailabilitySlots = removedSlots(from: burdenProcessSlots, keeping: availabilityProcessSlots)
-        let finalRankingSlots = removedSlots(from: finalSelectionSourceSlots, keeping: finalDerivationSlots)
+        let rankedFinalSourceSlots = finalSelectionSourceSlots.sorted(by: isBetterDerivationSlot)
+        let finalRankingSlots = removedSlots(from: rankedFinalSourceSlots, keeping: finalDerivationSlots)
+        let finalRankingRationales = Dictionary(uniqueKeysWithValues: finalRankingSlots.map { slot in
+            (slot.id, finalEliminationRationale(for: slot))
+        })
 
         return [
             CandidateSelectionStage(
@@ -2594,7 +2640,8 @@ private struct BracketReviewScreen: View {
                 incomingCount: finalSelectionSourceSlots.count,
                 remainingCount: finalDerivationCandidates.count,
                 eliminatedSlots: finalRankingSlots,
-                finalCandidates: finalDerivationCandidates
+                finalCandidates: finalDerivationCandidates,
+                eliminationRationales: finalRankingRationales
             )
         ]
     }
@@ -2603,7 +2650,9 @@ private struct BracketReviewScreen: View {
         VStack(alignment: .leading, spacing: 0) {
             SequentialDerivationTitle(
                 text: phase.onboardingTitle,
-                visibleCharacterCount: visibleTitleCharacterCount
+                initialDelay: Timing.titleInitialDelay,
+                characterInterval: Timing.titleCharacterInterval,
+                characterAnimationDuration: Timing.titleCharacterAnimation
             )
             .padding(.horizontal, LayoutMetrics.horizontalPadding)
             .padding(.top, 12)
@@ -2635,8 +2684,9 @@ private struct BracketReviewScreen: View {
                     onShowEliminated: {
                         isEliminatedCandidatesPresented = true
                     },
-                    onRestart: {
-                        print("Restart derivation")
+                    onAdjustCriteria: {
+                        adjustedCriteria = meeting.derivationCriteria
+                        isDerivationCriteriaPresented = true
                     }
                 )
                 .padding(.top, 24)
@@ -2651,9 +2701,10 @@ private struct BracketReviewScreen: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
             } else {
                 OnboardingResponseBlockStage(
-                    phase: phase,
                     slots: derivationSlots,
-                    visibleBlockCount: visibleResponseBlockCount,
+                    revealsBlocks: areResponseBlocksRevealed,
+                    revealInterval: Timing.blockInterval,
+                    revealAnimationResponse: Timing.blockAnimationResponse,
                     criteria: meeting.derivationCriteria,
                     dimsCriteriaExcludedSlots: areCriteriaExcludedSlotsDimmed,
                     dimsUnavailableSlots: areUnavailableSlotsDimmed,
@@ -2686,11 +2737,35 @@ private struct BracketReviewScreen: View {
                 calendar: calendar
             )
         }
+        .sheet(isPresented: $isDerivationCriteriaPresented) {
+            DerivationCriteriaSheet(
+                criteria: $adjustedCriteria,
+                onCancel: {
+                    isDerivationCriteriaPresented = false
+                },
+                onStart: {
+                    let criteria = adjustedCriteria
+                    isDerivationCriteriaPresented = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+                        onAdjustCriteria(criteria)
+                    }
+                }
+            )
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+        }
         .onAppear {
             startDerivationSequence()
         }
         .onChange(of: meeting.id) { _, _ in
             startDerivationSequence()
+        }
+        .onChange(of: meeting.derivationCriteria) { _, _ in
+            startDerivationSequence()
+        }
+        .onDisappear {
+            derivationSequenceTask?.cancel()
+            phaseAnimationTask?.cancel()
         }
         .toolbar(.hidden, for: .tabBar)
     }
@@ -2704,36 +2779,46 @@ private struct BracketReviewScreen: View {
     }
 
     private func startDerivationSequence() {
+        derivationSequenceTask?.cancel()
+        phaseAnimationTask?.cancel()
         setPhase(.preparing)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + Timing.phaseFilteringDelay) {
+        derivationSequenceTask = Task { @MainActor in
+            guard await pause(for: Timing.phaseFilteringDelay) else {
+                return
+            }
             setPhase(.filtering)
-        }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + Timing.phaseComparingDelay) {
+            guard await pause(for: Timing.phaseComparingDelay - Timing.phaseFilteringDelay) else {
+                return
+            }
             setPhase(.comparing)
-        }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + Timing.phaseBurdenDelay) {
+            guard await pause(for: Timing.phaseBurdenDelay - Timing.phaseComparingDelay) else {
+                return
+            }
             setPhase(.burden)
-        }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + Timing.phaseAvailabilityDelay) {
+            guard await pause(for: Timing.phaseAvailabilityDelay - Timing.phaseBurdenDelay) else {
+                return
+            }
             setPhase(.availability)
-        }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + Timing.phaseFinalDelay) {
+            guard await pause(for: Timing.phaseFinalDelay - Timing.phaseAvailabilityDelay) else {
+                return
+            }
             setPhase(.final)
         }
     }
 
     private func setPhase(_ nextPhase: MeetingDerivationPhase) {
+        phaseAnimationTask?.cancel()
+
         withAnimation(.easeInOut(duration: 0.24)) {
             phase = nextPhase
-            visibleTitleCharacterCount = 0
             isDetailVisible = false
             if nextPhase == .preparing {
-                visibleResponseBlockCount = 0
+                areResponseBlocksRevealed = false
                 areCriteriaExcludedSlotsDimmed = false
                 areUnavailableSlotsDimmed = false
                 areBurdenHeavySlotsDimmed = false
@@ -2749,134 +2834,98 @@ private struct BracketReviewScreen: View {
         }
 
         let characterCount = nextPhase.onboardingTitle.map { _ in 1 }.count
+        let detailDelay = Timing.detailDelay + Double(characterCount) * Timing.titleCharacterInterval
 
-        for index in 0..<characterCount {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Timing.titleInitialDelay + Double(index) * Timing.titleCharacterInterval) {
-                guard phase == nextPhase else {
-                    return
-                }
-
-                withAnimation(.easeInOut(duration: Timing.titleCharacterAnimation)) {
-                    visibleTitleCharacterCount = index + 1
-                }
-            }
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + Timing.detailDelay + Double(characterCount) * Timing.titleCharacterInterval) {
-            guard phase == nextPhase else {
+        phaseAnimationTask = Task { @MainActor in
+            guard await pause(for: detailDelay), phase == nextPhase else {
                 return
             }
 
             withAnimation(.easeOut(duration: Timing.detailAnimation)) {
                 isDetailVisible = true
             }
-        }
 
-        if nextPhase == .preparing {
-            let blockCount = derivationSlots.count
-            let blockStartDelay = Timing.blockInitialDelay + Double(characterCount) * Timing.titleCharacterInterval
-
-            for index in 0..<blockCount {
-                DispatchQueue.main.asyncAfter(deadline: .now() + blockStartDelay + Double(index) * Timing.blockInterval) {
-                    guard phase == nextPhase else {
-                        return
-                    }
-
-                    withAnimation(.spring(response: Timing.blockAnimationResponse, dampingFraction: 0.88)) {
-                        visibleResponseBlockCount = index + 1
-                    }
+            if nextPhase == .preparing {
+                guard await pause(for: Timing.blockInitialDelay - Timing.detailDelay), phase == nextPhase else {
+                    return
                 }
+
+                areResponseBlocksRevealed = true
+                return
             }
-        }
 
-        if nextPhase == .filtering {
-            scheduleElimination(
-                afterTitleCharacterCount: characterCount,
-                phase: nextPhase,
-                dim: { areCriteriaExcludedSlotsDimmed = true },
-                hide: { areCriteriaExcludedSlotsHidden = true }
-            )
-        }
-
-        if nextPhase == .comparing {
-            scheduleElimination(
-                afterTitleCharacterCount: characterCount,
-                phase: nextPhase,
-                dim: { areUnavailableSlotsDimmed = true },
-                hide: { areUnavailableSlotsHidden = true }
-            )
-        }
-
-        if nextPhase == .burden {
-            scheduleElimination(
-                afterTitleCharacterCount: characterCount,
-                phase: nextPhase,
-                dim: { areBurdenHeavySlotsDimmed = true },
-                hide: { areBurdenHeavySlotsHidden = true }
-            )
-        }
-
-        if nextPhase == .availability {
-            scheduleElimination(
-                afterTitleCharacterCount: characterCount,
-                phase: nextPhase,
-                dim: { areLowAvailabilitySlotsDimmed = true },
-                hide: { areLowAvailabilitySlotsHidden = true }
-            )
-        }
-
-        if nextPhase == .final {
-            scheduleElimination(
-                afterTitleCharacterCount: characterCount,
-                phase: nextPhase,
-                dim: { areNonFinalSlotsDimmed = true },
-                hide: { areNonFinalSlotsHidden = true },
-                onHidden: {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + Timing.recommendationProcessingHold) {
-                        guard phase == nextPhase, areNonFinalSlotsHidden else {
-                            return
-                        }
-
-                        withAnimation(.easeInOut(duration: 0.42)) {
-                            isRecommendationReady = true
-                        }
-                    }
-                }
-            )
-        }
-    }
-
-    private func scheduleElimination(
-        afterTitleCharacterCount characterCount: Int,
-        phase targetPhase: MeetingDerivationPhase,
-        dim: @escaping () -> Void,
-        hide: @escaping () -> Void,
-        onHidden: (() -> Void)? = nil
-    ) {
-        let dimDelay = Timing.detailDelay
-            + Double(characterCount) * Timing.titleCharacterInterval
-            + Timing.eliminationAfterDetailDelay
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + dimDelay) {
-            guard phase == targetPhase else {
+            guard await pause(for: Timing.eliminationAfterDetailDelay), phase == nextPhase else {
                 return
             }
 
             withAnimation(.easeInOut(duration: Timing.eliminationDimAnimation)) {
-                dim()
+                applyDim(for: nextPhase)
             }
-        }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + dimDelay + Timing.eliminationDimHold) {
-            guard phase == targetPhase else {
+            guard await pause(for: Timing.eliminationDimHold), phase == nextPhase else {
                 return
             }
 
             withAnimation(.spring(response: Timing.eliminationAnimationResponse, dampingFraction: 0.9)) {
-                hide()
+                applyHide(for: nextPhase)
             }
 
-            onHidden?()
+            guard nextPhase == .final else {
+                return
+            }
+
+            guard await pause(for: Timing.recommendationProcessingHold),
+                  phase == nextPhase,
+                  areNonFinalSlotsHidden else {
+                return
+            }
+
+            withAnimation(.easeInOut(duration: 0.42)) {
+                isRecommendationReady = true
+            }
+        }
+    }
+
+    private func applyDim(for phase: MeetingDerivationPhase) {
+        switch phase {
+        case .preparing:
+            break
+        case .filtering:
+            areCriteriaExcludedSlotsDimmed = true
+        case .comparing:
+            areUnavailableSlotsDimmed = true
+        case .burden:
+            areBurdenHeavySlotsDimmed = true
+        case .availability:
+            areLowAvailabilitySlotsDimmed = true
+        case .final:
+            areNonFinalSlotsDimmed = true
+        }
+    }
+
+    private func applyHide(for phase: MeetingDerivationPhase) {
+        switch phase {
+        case .preparing:
+            break
+        case .filtering:
+            areCriteriaExcludedSlotsHidden = true
+        case .comparing:
+            areUnavailableSlotsHidden = true
+        case .burden:
+            areBurdenHeavySlotsHidden = true
+        case .availability:
+            areLowAvailabilitySlotsHidden = true
+        case .final:
+            areNonFinalSlotsHidden = true
+        }
+    }
+
+    private func pause(for seconds: Double) async -> Bool {
+        do {
+            try await Task.sleep(for: .seconds(seconds))
+            return !Task.isCancelled
+        } catch {
+            return false
         }
     }
 
@@ -2966,20 +3015,32 @@ private struct BracketReviewScreen: View {
     }
 
     private var finalTimePreferenceChip: DerivationPhaseChip? {
-        if let timePreferenceChip {
-            return timePreferenceChip
-        }
-
-        guard finalDerivationSlots.contains(where: { (12...16).contains($0.hour) }) else {
+        guard let timePreferenceChip else {
             return nil
         }
 
-        return DerivationPhaseChip(
-            title: "오후 우선 반영",
-            symbolName: "clock.fill",
-            color: Color(uiColor: .systemBlue),
-            style: .summary
-        )
+        guard let recommendedSlot = finalDerivationSlots.first,
+              matchesPreferredTime(recommendedSlot) else {
+            return DerivationPhaseChip(
+                title: "\(meeting.derivationCriteria.timePreference.title) 후보 없음",
+                symbolName: "clock.badge.exclamationmark",
+                color: Color(uiColor: .systemOrange),
+                style: .summary
+            )
+        }
+
+        return timePreferenceChip
+    }
+
+    private func matchesPreferredTime(_ slot: DerivationResponseSlot) -> Bool {
+        switch meeting.derivationCriteria.timePreference {
+        case .any:
+            return true
+        case .morning:
+            return slot.hour < 12
+        case .afternoon:
+            return slot.hour >= 13
+        }
     }
 
     private var unavailableSlotCount: Int {
@@ -3003,30 +3064,301 @@ private struct BracketReviewScreen: View {
     }
 
     private func isBetterDerivationSlot(_ lhs: DerivationResponseSlot, _ rhs: DerivationResponseSlot) -> Bool {
-        let lhsScore = score(for: lhs)
-        let rhsScore = score(for: rhs)
+        let lhsProfile = rankProfile(for: lhs)
+        let rhsProfile = rankProfile(for: rhs)
 
-        if lhsScore == rhsScore {
-            if lhs.hour == rhs.hour {
-                return lhs.dayIndex < rhs.dayIndex
+        switch meeting.derivationCriteria.priority {
+        case .allAvailable:
+            if lhsProfile.optionalUnavailableCount != rhsProfile.optionalUnavailableCount {
+                return lhsProfile.optionalUnavailableCount < rhsProfile.optionalUnavailableCount
+            }
+        case .lowBurden:
+            if lhsProfile.burdenCount != rhsProfile.burdenCount {
+                return lhsProfile.burdenCount < rhsProfile.burdenCount
             }
 
-            return lhs.hour < rhs.hour
+            if lhsProfile.weightedBurdenScore != rhsProfile.weightedBurdenScore {
+                return lhsProfile.weightedBurdenScore < rhsProfile.weightedBurdenScore
+            }
+        case .requiredFirst:
+            if lhsProfile.requiredBurdenCount != rhsProfile.requiredBurdenCount {
+                return lhsProfile.requiredBurdenCount < rhsProfile.requiredBurdenCount
+            }
         }
 
-        return lhsScore > rhsScore
+        if lhsProfile.burdenCount != rhsProfile.burdenCount {
+            return lhsProfile.burdenCount < rhsProfile.burdenCount
+        }
+
+        if lhsProfile.weightedBurdenScore != rhsProfile.weightedBurdenScore {
+            return lhsProfile.weightedBurdenScore < rhsProfile.weightedBurdenScore
+        }
+
+        if lhsProfile.requiredBurdenCount != rhsProfile.requiredBurdenCount {
+            return lhsProfile.requiredBurdenCount < rhsProfile.requiredBurdenCount
+        }
+
+        if lhsProfile.optionalUnavailableCount != rhsProfile.optionalUnavailableCount {
+            return lhsProfile.optionalUnavailableCount < rhsProfile.optionalUnavailableCount
+        }
+
+        if lhsProfile.adjacentStableSlotCount != rhsProfile.adjacentStableSlotCount {
+            return lhsProfile.adjacentStableSlotCount > rhsProfile.adjacentStableSlotCount
+        }
+
+        if lhsProfile.preferencePenalty != rhsProfile.preferencePenalty {
+            return lhsProfile.preferencePenalty < rhsProfile.preferencePenalty
+        }
+
+        return lhs.id < rhs.id
     }
 
     private func score(for slot: DerivationResponseSlot) -> Int {
-        let timePenalty = meeting.derivationCriteria.timePreferencePenalty(for: slot.hour)
+        let profile = rankProfile(for: slot)
         return max(
             0,
-            slot.availableCount * 12 -
-                slot.optionalUnavailableCount * 9 -
-                slot.weightedBurdenScore * 4 -
-                timePenalty -
-                abs(slot.hour - 14) * 2 -
-                slot.dayIndex
+            100 -
+                profile.optionalUnavailableCount * 18 -
+                profile.burdenCount * 8 -
+                profile.weightedBurdenScore * 5 -
+                profile.requiredBurdenCount * 6 +
+                profile.adjacentStableSlotCount * 4 -
+                profile.preferencePenalty
+        )
+    }
+
+    private func rankProfile(for slot: DerivationResponseSlot) -> FinalCandidateRankProfile {
+        let summary = responseSummary(for: slot)
+        return FinalCandidateRankProfile(
+            optionalUnavailableCount: summary?.optionalUnavailableCount ?? slot.optionalUnavailableCount,
+            burdenCount: summary?.burdenCount ?? slot.burdenCount,
+            weightedBurdenScore: summary?.weightedBurdenScore ?? slot.weightedBurdenScore,
+            requiredBurdenCount: summary?.burdenMembers.filter(\.isRequired).count ?? 0,
+            adjacentStableSlotCount: adjacentStableSlotCount(for: slot),
+            preferencePenalty: meeting.derivationCriteria.timePreferencePenalty(for: slot.hour)
+        )
+    }
+
+    private func responseSummary(for slot: DerivationResponseSlot) -> TeamResponseSummary? {
+        let key = AvailabilitySlot(date: calendar.startOfDay(for: slot.date), hour: slot.hour)
+        return responseSummaries[key]
+    }
+
+    private func adjacentStableSlotCount(for slot: DerivationResponseSlot) -> Int {
+        [slot.hour - 1, slot.hour + 1].reduce(0) { count, hour in
+            guard (9..<18).contains(hour) else {
+                return count
+            }
+
+            let key = AvailabilitySlot(date: calendar.startOfDay(for: slot.date), hour: hour)
+            guard let summary = responseSummaries[key],
+                  summary.requiredUnavailableCount == 0,
+                  summary.unavailableCount == 0 else {
+                return count
+            }
+
+            return count + 1
+        }
+    }
+
+    private func finalCandidateRationale(
+        for slot: DerivationResponseSlot,
+        summary: TeamResponseSummary,
+        rank: Int
+    ) -> CandidateSelectionRationale {
+        let profile = rankProfile(for: slot)
+
+        if rank == 0 {
+            if meeting.derivationCriteria.timePreference != .any,
+               matchesPreferredTime(slot) {
+                let preferenceTitle = meeting.derivationCriteria.timePreference.title
+                return CandidateSelectionRationale(
+                    title: "\(preferenceTitle) 후보 중 가장 안정적",
+                    detail: "주최자가 선호한 \(preferenceTitle) 시간대 중 참석 부담이 가장 낮습니다.",
+                    symbolName: "clock.fill",
+                    tint: Color(uiColor: .systemBlue)
+                )
+            }
+
+            if summary.burdenCount == 0 {
+                return CandidateSelectionRationale(
+                    title: "별도 조정 없이 참석 가능",
+                    detail: "필참자 불가와 부담 응답이 없어 바로 확정하기 가장 안정적인 시간입니다.",
+                    symbolName: "checkmark.seal.fill",
+                    tint: Color(uiColor: .systemGreen)
+                )
+            }
+
+            if summary.burdenMembers.first?.category == .condition {
+                return CandidateSelectionRationale(
+                    title: "가벼운 컨디션 부담만 확인",
+                    detail: "6명 모두 참석 가능하고, 남은 부담도 조율 가능한 컨디션 사유입니다.",
+                    symbolName: "moon.zzz.fill",
+                    tint: Color(uiColor: .systemTeal)
+                )
+            }
+
+            if profile.adjacentStableSlotCount > 0 {
+                return CandidateSelectionRationale(
+                    title: "앞뒤 일정까지 안정적",
+                    detail: "회의 전후에도 참석 가능한 시간이 이어져 일정 변동에 대응하기 쉽습니다.",
+                    symbolName: "calendar.badge.checkmark",
+                    tint: Color(uiColor: .systemGreen)
+                )
+            }
+
+            return CandidateSelectionRationale(
+                title: "부담 강도가 가장 낮음",
+                detail: "남은 후보 중 참석 조건과 부담 사유의 조정 위험이 가장 낮습니다.",
+                symbolName: "arrow.down.heart.fill",
+                tint: Color(uiColor: .systemGreen)
+            )
+        }
+
+        if let firstSlot = finalDerivationSlots.first,
+           let firstSummary = responseSummary(for: firstSlot)?.finalCandidatePresentationSummary(rank: 0),
+           let category = summary.burdenMembers.first?.category,
+           category.weight > (firstSummary.burdenMembers.first?.category.weight ?? 0) {
+            return CandidateSelectionRationale(
+                title: "\(category.burdenTitle)이 있어 차순위",
+                detail: "전원 참석은 가능하지만 추천 시간보다 조정 위험이 큰 부담 사유가 남아 있습니다.",
+                symbolName: category.symbolName,
+                tint: Color(uiColor: .systemOrange)
+            )
+        }
+
+        if let firstSlot = finalDerivationSlots.first {
+            let firstProfile = rankProfile(for: firstSlot)
+
+            if profile.requiredBurdenCount > firstProfile.requiredBurdenCount {
+                return CandidateSelectionRationale(
+                    title: "필참자 부담이 있어 차순위",
+                    detail: "회의는 성립하지만 필참자의 부담 사유를 한 번 더 확인해야 합니다.",
+                    symbolName: "person.crop.circle.badge.exclamationmark",
+                    tint: Color(uiColor: .systemOrange)
+                )
+            }
+
+            if profile.adjacentStableSlotCount < firstProfile.adjacentStableSlotCount {
+                return CandidateSelectionRationale(
+                    title: "앞뒤 일정 여유가 적은 대안",
+                    detail: "참석 조건은 충족하지만 회의 전후에 일정 변동을 흡수할 여유가 상대적으로 적습니다.",
+                    symbolName: "calendar.badge.clock",
+                    tint: Color(uiColor: .systemOrange)
+                )
+            }
+
+            if profile.preferencePenalty > firstProfile.preferencePenalty {
+                return CandidateSelectionRationale(
+                    title: "선호 시간대와 가까운 대안",
+                    detail: "참석 조건은 안정적이지만 주최자가 선택한 시간 선호에서는 한 단계 뒤에 있습니다.",
+                    symbolName: "clock.badge.exclamationmark",
+                    tint: Color(uiColor: .systemBlue)
+                )
+            }
+
+            if profile == firstProfile && !calendar.isDate(slot.date, inSameDayAs: firstSlot.date) {
+                return CandidateSelectionRationale(
+                    title: "동일 조건의 다른 요일 대안",
+                    detail: "추천 시간과 조건이 같아 요일 선택 폭을 넓히는 대표안으로 함께 남겼습니다.",
+                    symbolName: "calendar.badge.plus",
+                    tint: Color(uiColor: .systemIndigo)
+                )
+            }
+        }
+
+        return CandidateSelectionRationale(
+            title: "조건이 가장 가까운 차순위",
+            detail: "추천 시간 다음으로 참석 조건과 부담 수준이 안정적인 후보입니다.",
+            symbolName: "arrow.triangle.branch",
+            tint: Color(uiColor: .systemIndigo)
+        )
+    }
+
+    private func finalEliminationRationale(for slot: DerivationResponseSlot) -> CandidateSelectionRationale {
+        guard let baselineSlot = finalDerivationSlots.last else {
+            return CandidateSelectionRationale(
+                title: "대표안에서 제외",
+                detail: "남은 후보와 비교해 최종 대표안에는 포함되지 않았습니다.",
+                symbolName: "minus.circle.fill",
+                tint: Color(uiColor: .systemGray)
+            )
+        }
+
+        let profile = rankProfile(for: slot)
+        let baseline = rankProfile(for: baselineSlot)
+
+        if profile.optionalUnavailableCount > baseline.optionalUnavailableCount {
+            return CandidateSelectionRationale(
+                title: "선택 참석자 불가 \(profile.optionalUnavailableCount)명",
+                detail: "대표안보다 참석 가능한 인원이 적어 최종 두 시간에서는 제외했습니다.",
+                symbolName: "person.crop.circle.badge.minus",
+                tint: Color(uiColor: .systemOrange)
+            )
+        }
+
+        if profile.burdenCount > baseline.burdenCount {
+            return CandidateSelectionRationale(
+                title: "부담 인원이 더 많음",
+                detail: "대표안보다 부담 응답자가 많아 추가 조율 가능성이 높습니다.",
+                symbolName: "person.2.badge.minus",
+                tint: Color(uiColor: .systemOrange)
+            )
+        }
+
+        if profile.weightedBurdenScore > baseline.weightedBurdenScore {
+            let category = responseSummary(for: slot)?.burdenMembers.max { lhs, rhs in
+                lhs.category.weight < rhs.category.weight
+            }?.category
+            return CandidateSelectionRationale(
+                title: category.map { "\($0.burdenTitle) 조정 위험" } ?? "부담 강도가 더 높음",
+                detail: "부담 인원은 같지만 일정·이동처럼 조정 위험이 큰 사유가 있어 우선순위가 낮아졌습니다.",
+                symbolName: category?.symbolName ?? "exclamationmark.bubble.fill",
+                tint: Color(uiColor: .systemOrange)
+            )
+        }
+
+        if profile.requiredBurdenCount > baseline.requiredBurdenCount {
+            return CandidateSelectionRationale(
+                title: "필참자 부담",
+                detail: "필참자가 참석은 가능하지만 부담을 표시해 더 안정적인 대표안을 우선했습니다.",
+                symbolName: "person.crop.circle.badge.exclamationmark",
+                tint: Color(uiColor: .systemOrange)
+            )
+        }
+
+        if profile.adjacentStableSlotCount < baseline.adjacentStableSlotCount {
+            return CandidateSelectionRationale(
+                title: "앞뒤 일정 여유 부족",
+                detail: "회의 전후에 전원이 가능한 시간이 적어 일정 변동에 대응하기 어렵습니다.",
+                symbolName: "calendar.badge.clock",
+                tint: Color(uiColor: .systemBlue)
+            )
+        }
+
+        if profile.preferencePenalty > baseline.preferencePenalty {
+            return CandidateSelectionRationale(
+                title: "선호 시간대 우선순위 낮음",
+                detail: "참석 조건은 비슷하지만 주최자가 선택한 시간 선호와 거리가 있습니다.",
+                symbolName: "clock.badge.exclamationmark",
+                tint: Color(uiColor: .systemBlue)
+            )
+        }
+
+        if profile == baseline {
+            return CandidateSelectionRationale(
+                title: "동점 대표안에서 제외",
+                detail: "조건이 같아 유사 시간의 중복을 줄이고 서로 다른 요일의 대표안을 남겼습니다.",
+                symbolName: "equal.circle.fill",
+                tint: Color(uiColor: .systemGray)
+            )
+        }
+
+        return CandidateSelectionRationale(
+            title: "유사 시간대 대표안에서 제외",
+            detail: "참석 조건이 비슷해 선택 폭을 넓히는 대표 두 시간을 우선했습니다.",
+            symbolName: "rectangle.3.group.fill",
+            tint: Color(uiColor: .systemGray)
         )
     }
 }
@@ -3279,6 +3611,8 @@ private struct FinalDerivationCandidate: Identifiable {
     let slot: DerivationResponseSlot
     let summary: TeamResponseSummary
     let score: Int
+    let rationale: CandidateSelectionRationale
+    let timePreference: DerivationTimePreference
 
     var id: String {
         slot.id
@@ -3289,63 +3623,88 @@ private struct FinalDerivationCandidate: Identifiable {
     }
 
     var selectionInsights: [FinalCandidateInsight] {
-        var insights: [FinalCandidateInsight] = []
+        var insights = [
+            FinalCandidateInsight(
+                title: rationale.title,
+                symbolName: rationale.symbolName,
+                color: rationale.tint,
+                detail: rationale.detail
+            )
+        ]
+
+        let rationaleExplainsPreference = timePreference != .any
+            && rationale.title.contains(timePreference.title)
+        let rationaleExplainsBurden = rationale.title.contains("부담")
+            || rationale.title.contains("컨디션")
 
         if summary.unavailableCount > 0 && summary.requiredUnavailableCount == 0 {
             insights.append(
                 FinalCandidateInsight(
                     title: "선택 \(summary.optionalUnavailableCount)명 불가",
                     symbolName: "minus.circle.fill",
-                    color: Color(uiColor: .systemOrange)
+                    color: Color(uiColor: .systemOrange),
+                    detail: "필참자는 모두 참석 가능하며 선택 참석자의 불가 응답만 남아 있습니다."
                 )
             )
         }
 
-        if summary.burdenCount == 0 {
-            insights.append(
-                FinalCandidateInsight(
-                    title: "부담 없음",
-                    symbolName: "heart.circle.fill",
-                    color: Color(uiColor: .systemTeal)
-                )
-            )
-        } else if summary.weightedBurdenScore <= 2 {
-            insights.append(
-                FinalCandidateInsight(
-                    title: "부담 \(summary.burdenCount)명 확인",
-                    symbolName: "exclamationmark.bubble.fill",
-                    color: Color(uiColor: .systemOrange)
-                )
-            )
-        } else {
-            insights.append(
-                FinalCandidateInsight(
-                    title: "부담 \(summary.burdenCount)명 확인",
-                    symbolName: "exclamationmark.bubble.fill",
-                    color: Color(uiColor: .systemOrange)
-                )
-            )
+        if !rationaleExplainsBurden {
+            insights.append(burdenInsight)
         }
 
-        if (12...16).contains(slot.hour) {
+        if timePreference != .any,
+           timePreferencePenalty == 0,
+           !rationaleExplainsPreference {
             insights.append(
                 FinalCandidateInsight(
-                    title: "오후 선호 반영",
+                    title: "\(timePreference.title) 선호 반영",
                     symbolName: "sun.max.fill",
-                    color: Color(uiColor: .systemBlue)
-                )
-            )
-        } else if (10...16).contains(slot.hour) {
-            insights.append(
-                FinalCandidateInsight(
-                    title: "업무 시간 적합",
-                    symbolName: "clock.badge.checkmark.fill",
-                    color: Color(uiColor: .systemBlue)
+                    color: Color(uiColor: .systemBlue),
+                    detail: "주최자가 선택한 \(timePreference.title) 시간대 조건을 반영했습니다."
                 )
             )
         }
 
         return Array(insights.prefix(3))
+    }
+
+    private var burdenInsight: FinalCandidateInsight {
+        guard let firstBurden = summary.burdenMembers.first else {
+            return FinalCandidateInsight(
+                title: "부담 응답 없음",
+                symbolName: "checkmark.circle.fill",
+                color: Color(uiColor: .systemGreen),
+                detail: "부담 응답이 없어 추가 확인 없이 확정할 수 있습니다."
+            )
+        }
+
+        if summary.burdenCount == 1 {
+            return FinalCandidateInsight(
+                title: "\(firstBurden.category.burdenTitle) 1명 확인",
+                symbolName: firstBurden.category.symbolName,
+                color: Color(uiColor: .systemOrange),
+                detail: "\(firstBurden.name)님의 \(firstBurden.category.burdenTitle) 응답이 있지만 참석 가능한 범위입니다."
+            )
+        }
+
+        let categoryCount = Set(summary.burdenMembers.map(\.category)).count
+        return FinalCandidateInsight(
+            title: "부담 응답 \(summary.burdenCount)명 확인",
+            symbolName: "exclamationmark.bubble.fill",
+            color: Color(uiColor: .systemOrange),
+            detail: "\(categoryCount)개 유형의 부담 사유를 비교해 조정 위험이 낮은 후보를 남겼습니다."
+        )
+    }
+
+    private var timePreferencePenalty: Int {
+        switch timePreference {
+        case .any:
+            return 0
+        case .morning:
+            return slot.hour < 12 ? 0 : 1
+        case .afternoon:
+            return slot.hour >= 13 ? 0 : 1
+        }
     }
 }
 
@@ -3353,10 +3712,27 @@ private struct FinalCandidateInsight: Identifiable, Equatable {
     let title: String
     let symbolName: String
     let color: Color
+    var detail: String? = nil
 
     var id: String {
         title
     }
+}
+
+private struct FinalCandidateRankProfile: Equatable {
+    let optionalUnavailableCount: Int
+    let burdenCount: Int
+    let weightedBurdenScore: Int
+    let requiredBurdenCount: Int
+    let adjacentStableSlotCount: Int
+    let preferencePenalty: Int
+}
+
+private struct CandidateSelectionRationale {
+    let title: String
+    let detail: String
+    let symbolName: String
+    let tint: Color
 }
 
 private struct CandidateSelectionStage: Identifiable {
@@ -3376,9 +3752,9 @@ private struct CandidateSelectionStage: Identifiable {
             case .burden:
                 return "부담 비교"
             case .availability:
-                return "참여율 비교"
+                return "바로 참석 비교"
             case .finalRanking:
-                return "최종 2안"
+                return "대표안 선정"
             }
         }
 
@@ -3391,9 +3767,24 @@ private struct CandidateSelectionStage: Identifiable {
             case .burden:
                 return "일정과 이동처럼 부담이 큰 시간을 뒤로 미뤘어요."
             case .availability:
-                return "부담 없이 참석 가능한 인원이 많은 시간을 남겼어요."
+                return "부담 없이 바로 참석 가능한 인원이 가장 많은 시간을 남겼어요."
             case .finalRanking:
-                return "남은 후보의 응답과 선호 기준을 비교해 2안을 추천했어요."
+                return "조건이 비슷한 후보 중 안정성과 선택 폭을 고려해 2안을 남겼어요."
+            }
+        }
+
+        var balancedDetail: String {
+            switch self {
+            case .criteria:
+                return "주최자가 제외한 시간대를\n먼저 반영했어요."
+            case .requiredAttendance:
+                return "필참자가 불가로 응답한 시간은\n후보에서 제외했어요."
+            case .burden:
+                return "일정과 이동처럼 부담이 큰 시간을\n뒤로 미뤘어요."
+            case .availability:
+                return "부담 없이 바로 참석 가능한 인원이\n가장 많은 시간을 남겼어요."
+            case .finalRanking:
+                return "조건이 비슷한 후보 중 안정성과 선택 폭을 고려해\n2안을 남겼어요."
             }
         }
 
@@ -3433,6 +3824,7 @@ private struct CandidateSelectionStage: Identifiable {
     let remainingCount: Int
     let eliminatedSlots: [DerivationResponseSlot]
     let finalCandidates: [FinalDerivationCandidate]
+    var eliminationRationales: [String: CandidateSelectionRationale] = [:]
 
     var id: String {
         kind.rawValue
@@ -3646,19 +4038,19 @@ private struct BorderBeamModifier: ViewModifier {
     private func pulseLayer(showBloom: Bool, showStroke: Bool) -> some View {
         let preset = BorderBeamThemePreset.preset(size: size, theme: theme)
         let finalBrightness = brightness ?? preset.brightness
+        let colors = colorVariant.colors(for: theme)
+        let shape = RoundedRectangle(cornerRadius: resolvedRadius, style: .continuous)
 
         TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { timeline in
             let rawProgress = reduceMotion ? 0.65 : pulseProgress(at: timeline.date)
             let linearProgress = reduceMotion ? 0.18 : cycleProgress(at: timeline.date)
             let breath = 0.50 + rawProgress * 0.50
             let opacity = clampedStrength * breath
-            let colors = colorVariant.colors(for: theme)
             let gradient = AngularGradient(
                 colors: colors,
                 center: .center,
                 angle: .degrees(staticColors ? 0 : linearProgress * 360)
             )
-            let shape = RoundedRectangle(cornerRadius: resolvedRadius, style: .continuous)
 
             ZStack {
                 if showBloom && size == .pulseOutside {
@@ -3759,7 +4151,7 @@ private struct FinalCandidateComparisonView: View {
     let calendar: Calendar
     let selectionStageCount: Int
     let onShowEliminated: () -> Void
-    let onRestart: () -> Void
+    let onAdjustCriteria: () -> Void
     @State private var detailCandidate: FinalDerivationCandidate?
     @State private var didRevealCandidates = false
     @State private var didCompleteCandidateIntro = false
@@ -3846,8 +4238,8 @@ private struct FinalCandidateComparisonView: View {
             Spacer(minLength: 20)
 
             HStack(spacing: 12) {
-                Button(action: onRestart) {
-                    Text("다시하기")
+                Button(action: onAdjustCriteria) {
+                    Text("기준 조정")
                         .font(.system(size: 16, weight: .medium))
                         .lineLimit(1)
                         .frame(maxWidth: .infinity)
@@ -3929,6 +4321,7 @@ private struct FinalCandidateDetailCard: View {
     let onSelect: () -> Void
     @State private var showBeam = false
     @State private var beamOpacity = 0.0
+    @State private var beamVisibilityTask: Task<Void, Never>?
 
     private var tint: Color {
         candidate.rank == 0 ? Color(uiColor: .systemBlue) : Color(uiColor: .systemIndigo)
@@ -3990,31 +4383,54 @@ private struct FinalCandidateDetailCard: View {
         .onChange(of: isSelected) { _, newValue in
             updateBeamVisibility(for: newValue)
         }
+        .onDisappear {
+            beamVisibilityTask?.cancel()
+        }
     }
 
     private func updateBeamVisibility(for selected: Bool) {
+        beamVisibilityTask?.cancel()
+
         if selected && candidate.rank == 0 {
             showBeam = false
             beamOpacity = 0
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) {
-                if isSelected && candidate.rank == 0 {
-                    showBeam = true
-                    beamOpacity = 0
-                    DispatchQueue.main.async {
-                        withAnimation(.easeOut(duration: 0.62)) {
-                            beamOpacity = 1
-                        }
-                    }
+
+            beamVisibilityTask = Task { @MainActor in
+                do {
+                    try await Task.sleep(for: .seconds(0.42))
+                    try Task.checkCancellation()
+                } catch {
+                    return
+                }
+
+                guard isSelected && candidate.rank == 0 else {
+                    return
+                }
+
+                showBeam = true
+                beamOpacity = 0
+                withAnimation(.easeOut(duration: 0.62)) {
+                    beamOpacity = 1
                 }
             }
         } else {
             withAnimation(.easeIn(duration: 0.16)) {
                 beamOpacity = 0
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                if !isSelected || candidate.rank != 0 {
-                    showBeam = false
+
+            beamVisibilityTask = Task { @MainActor in
+                do {
+                    try await Task.sleep(for: .seconds(0.18))
+                    try Task.checkCancellation()
+                } catch {
+                    return
                 }
+
+                guard !isSelected || candidate.rank != 0 else {
+                    return
+                }
+
+                showBeam = false
             }
         }
     }
@@ -4059,10 +4475,10 @@ private struct FinalCandidateDetailCard: View {
 
     private var recommendationReason: some View {
         HStack(alignment: .center, spacing: 10) {
-            Image(systemName: candidate.rank == 0 ? "checkmark.seal.fill" : "arrow.down.right.circle.fill")
+            Image(systemName: candidate.rationale.symbolName)
                 .font(.system(size: 15, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(candidate.rank == 0 ? Color(uiColor: .systemGreen) : tint)
+                .foregroundStyle(candidate.rationale.tint)
                 .frame(width: 28, height: 28)
                 .background(reasonIconBackground, in: Circle())
 
@@ -4135,27 +4551,7 @@ private struct FinalCandidateDetailCard: View {
     }
 
     private var comparisonReasonText: String {
-        if candidate.rank == 0 {
-            if candidate.summary.unavailableCount > 0 {
-                return "후보 중 보완 부담이 가장 낮은 시간이에요."
-            }
-
-            if candidate.summary.burdenCount > 0 {
-                return "후보 중 부담이 가장 적은 시간이에요."
-            }
-
-            return "별도 조정이 필요 없는 시간이에요."
-        }
-
-        if candidate.summary.unavailableCount > 0 {
-            return "선택 참석자 보완이 필요해 차순위로 남았어요."
-        }
-
-        if let category = candidate.summary.burdenMembers.first?.category {
-            return "\(category.burdenTitle)이 있어 차순위로 남았어요."
-        }
-
-        return "업무 여유가 적어 차순위로 남았어요."
+        candidate.rationale.title
     }
 
     private var participantSummary: some View {
@@ -4235,11 +4631,7 @@ private struct FinalCandidateDetailCard: View {
     }
 
     private var reasonIconBackground: Color {
-        if candidate.rank == 0 {
-            return Color(uiColor: .systemGreen).opacity(0.1)
-        }
-
-        return tint.opacity(0.1)
+        candidate.rationale.tint.opacity(0.1)
     }
 }
 
@@ -4776,6 +5168,10 @@ private struct FinalCandidateDetailSheet: View {
     }
 
     private func insightDetailText(for insight: FinalCandidateInsight) -> String {
+        if let detail = insight.detail {
+            return detail
+        }
+
         switch insight.title {
         case "전원 참석 가능":
             return "불가 응답 없이 6명이 모두 참석 가능한 후보입니다."
@@ -4961,34 +5357,40 @@ private struct CandidateSelectionProcessView: View {
                                 Text("\(index + 1)")
                                     .font(.system(size: 11, weight: .bold))
                                     .monospacedDigit()
-                                    .foregroundStyle(selectedStageID == stage.id ? Color.white : stage.kind.tint)
+                                    .foregroundStyle(selectedStageID == stage.id ? Color.white : Color(uiColor: .secondaryLabel))
                                     .frame(width: 20, height: 20)
                                     .background(
-                                        selectedStageID == stage.id ? stage.kind.tint : stage.kind.tint.opacity(0.12),
+                                        selectedStageID == stage.id
+                                            ? Color.white.opacity(0.16)
+                                            : Color(uiColor: .secondarySystemGroupedBackground),
                                         in: Circle()
                                     )
 
                                 Text(stage.kind.title)
                                     .font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(.primary)
+                                    .foregroundStyle(selectedStageID == stage.id ? Color.white : Color(uiColor: .secondaryLabel))
 
                                 Text("\(stage.remainingCount)")
                                     .font(.system(size: 12, weight: .semibold))
                                     .monospacedDigit()
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(
+                                        selectedStageID == stage.id
+                                            ? Color.white.opacity(0.72)
+                                            : Color(uiColor: .tertiaryLabel)
+                                    )
                             }
                             .padding(.horizontal, 10)
                             .frame(height: 38)
                             .background(
-                                selectedStageID == stage.id ? Color(uiColor: .systemBackground) : Color.clear,
+                                selectedStageID == stage.id ? Color.primary : Color(uiColor: .systemBackground),
                                 in: Capsule()
                             )
                             .overlay {
                                 Capsule()
                                     .stroke(
                                         selectedStageID == stage.id
-                                            ? Color(uiColor: .separator).opacity(0.12)
-                                            : Color(uiColor: .separator).opacity(0.06),
+                                            ? Color.clear
+                                            : Color(uiColor: .separator).opacity(0.18),
                                         lineWidth: 0.7
                                     )
                             }
@@ -5046,7 +5448,7 @@ private struct CandidateSelectionStagePage: View {
     }
 
     private var stageHeader: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .center, spacing: 12) {
             Image(systemName: stage.kind.symbolName)
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(stage.kind.tint)
@@ -5058,10 +5460,18 @@ private struct CandidateSelectionStagePage: View {
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(.primary)
 
-                Text(stage.kind.detail)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                ViewThatFits(in: .horizontal) {
+                    Text(stage.kind.detail)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+
+                    Text(stage.kind.balancedDetail)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineSpacing(2)
             }
 
             Spacer(minLength: 4)
@@ -5069,7 +5479,7 @@ private struct CandidateSelectionStagePage: View {
     }
 
     private var countFlow: some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .center, spacing: 0) {
             CandidateSelectionCountMetric(
                 count: stage.incomingCount,
                 label: "검토 후보",
@@ -5079,6 +5489,7 @@ private struct CandidateSelectionStagePage: View {
             Image(systemName: "arrow.right")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Color(uiColor: .tertiaryLabel))
+                .frame(width: 38)
 
             CandidateSelectionCountMetric(
                 count: stage.remainingCount,
@@ -5126,26 +5537,16 @@ private struct CandidateSelectionStagePage: View {
     }
 
     private var connectedEliminatedRows: some View {
-        VStack(spacing: 9) {
+        LazyVStack(spacing: 10) {
             ForEach(sortedEliminatedSlots) { slot in
-                HStack(spacing: 8) {
-                    CandidateSelectionBranchConnector(tint: stage.kind.tint)
-
-                    CandidateSelectionSlotRow(
-                        slot: slot,
-                        stageKind: stage.kind,
-                        summary: summary(for: slot),
-                        calendar: calendar
-                    )
-                }
+                CandidateSelectionSlotRow(
+                    slot: slot,
+                    stageKind: stage.kind,
+                    summary: summary(for: slot),
+                    selectionRationale: stage.eliminationRationales[slot.id],
+                    calendar: calendar
+                )
             }
-        }
-        .overlay(alignment: .leading) {
-            Rectangle()
-                .fill(Color(uiColor: .separator).opacity(0.32))
-                .frame(width: 1)
-                .padding(.vertical, 26)
-                .offset(x: 3.5)
         }
     }
 
@@ -5182,7 +5583,11 @@ private struct CandidateSelectionStagePage: View {
     }
 
     private var sortedEliminatedSlots: [DerivationResponseSlot] {
-        stage.eliminatedSlots.sorted { lhs, rhs in
+        if stage.kind == .finalRanking {
+            return stage.eliminatedSlots
+        }
+
+        return stage.eliminatedSlots.sorted { lhs, rhs in
             if lhs.date == rhs.date {
                 return lhs.hour < rhs.hour
             }
@@ -5203,35 +5608,72 @@ private struct CandidateSelectionCountMetric: View {
     let tint: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .center, spacing: 3) {
             Text("\(count)")
                 .font(.system(size: 24, weight: .bold))
                 .monospacedDigit()
                 .foregroundStyle(tint)
+                .frame(height: 29, alignment: .center)
 
             Text(label)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
+                .frame(height: 14, alignment: .center)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 }
 
-private struct CandidateSelectionBranchConnector: View {
+private struct CandidateSelectionExcludedRowHeader: View {
+    let dateText: String
+    let timeText: String
+    let reasonText: String
     let tint: Color
+    let showsChevron: Bool
+    let isExpanded: Bool
 
     var body: some View {
-        ZStack(alignment: .leading) {
-            Rectangle()
-                .fill(Color(uiColor: .separator).opacity(0.34))
-                .frame(height: 1)
-                .offset(x: 4)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text(dateText)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
 
-            Circle()
-                .fill(tint)
-                .frame(width: 7, height: 7)
+                Text(timeText)
+                    .font(.system(size: 13, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 8)
+
+                if showsChevron {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Color(uiColor: .tertiaryLabel))
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                        .frame(width: 14)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(tint)
+                    .frame(width: 7, height: 7)
+
+                Text(reasonText)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+            }
         }
-        .frame(width: 24, height: 64)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 13)
+        .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
+        .contentShape(Rectangle())
     }
 }
 
@@ -5239,23 +5681,27 @@ private struct CandidateSelectionSlotRow: View {
     let slot: DerivationResponseSlot
     let stageKind: CandidateSelectionStage.Kind
     let summary: TeamResponseSummary?
+    let selectionRationale: CandidateSelectionRationale?
     let calendar: Calendar
+    @State private var isExpanded = false
 
-    private var relatedNames: [String] {
-        guard let summary else {
-            return []
+    private var canExpand: Bool {
+        guard summary != nil else {
+            return false
         }
 
         switch stageKind {
-        case .requiredAttendance:
-            return summary.unavailableMembers.filter(\.isRequired).map(\.name)
-        case .burden:
-            return summary.burdenMembers.map(\.name)
-        case .availability:
-            return summary.unavailableMembers.map(\.name)
-        case .criteria, .finalRanking:
-            return []
+        case .requiredAttendance, .burden, .availability:
+            return true
+        case .finalRanking:
+            return selectionRationale != nil
+        case .criteria:
+            return false
         }
+    }
+
+    private var reasonTint: Color {
+        selectionRationale?.tint ?? stageKind.tint
     }
 
     private var reasonText: String {
@@ -5275,50 +5721,375 @@ private struct CandidateSelectionSlotRow: View {
 
             return "선택 기준에서 제외"
         case .requiredAttendance:
-            return "필참 \(slot.requiredUnavailableCount)명 불가"
+            return requiredAttendanceReasonText
         case .burden:
-            return "부담 \(slot.burdenCount)명 · 가중 \(slot.weightedBurdenScore)"
+            return burdenReasonText
         case .availability:
-            return "가능 \(slot.availableCount)/\(slot.availableCount + slot.burdenCount + slot.unavailableCount)명"
+            return availabilityReasonText
         case .finalRanking:
-            return slot.burdenCount > 0 ? "부담 \(slot.burdenCount)명 확인" : "응답 조건 충족"
+            return compactFinalReasonText
+        }
+    }
+
+    private var requiredAttendanceReasonText: String {
+        let members = summary?.unavailableMembers.filter(\.isRequired) ?? []
+        guard let first = members.first else {
+            return "필참 불가"
+        }
+
+        if members.count == 1 {
+            return "\(first.name) · 필참 불가"
+        }
+
+        return "\(first.name) 외 \(members.count - 1)명 · 필참 불가"
+    }
+
+    private var burdenReasonText: String {
+        let members = summary?.burdenMembers ?? []
+        guard let first = members.first else {
+            return "부담 사유 확인"
+        }
+
+        let categories = Set(members.map(\.category))
+        let categoryText = categories.count == 1
+            ? first.category.burdenTitle
+            : "부담 유형 \(categories.count)개"
+
+        if members.count == 1 {
+            return "\(first.name) · \(categoryText)"
+        }
+
+        return "\(first.name) 외 \(members.count - 1)명 · \(categoryText)"
+    }
+
+    private var availabilityReasonText: String {
+        let totalCount = slot.availableCount + slot.burdenCount + slot.unavailableCount
+        let reviewCount = max(totalCount - slot.availableCount, 0)
+
+        guard reviewCount > 0 else {
+            return "\(slot.availableCount)/\(totalCount) 바로 가능"
+        }
+
+        return "\(slot.availableCount)/\(totalCount) 바로 가능 · \(reviewCount)명 확인"
+    }
+
+    private var compactFinalReasonText: String {
+        guard let title = selectionRationale?.title else {
+            return "대표안에서 제외"
+        }
+
+        switch title {
+        case "선호 시간대 우선순위 낮음":
+            return "선호 시간대 후순위"
+        case "동점 대표안에서 제외":
+            return "동점 대표안 중복"
+        case "유사 시간대 대표안에서 제외":
+            return "유사 시간대 중복"
+        default:
+            return title
         }
     }
 
     var body: some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(slot.fullDateText(calendar: calendar))
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.primary)
+        VStack(spacing: 0) {
+            Button {
+                guard canExpand else {
+                    return
+                }
 
-                Text(slot.timeRangeText)
-                    .font(.system(size: 12, weight: .medium))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer(minLength: 4)
-
-            if !relatedNames.isEmpty {
-                AvatarStack(
-                    names: relatedNames,
-                    maxVisible: 2,
-                    size: 23,
-                    borderColor: Color(uiColor: .secondarySystemGroupedBackground),
-                    borderWidth: 1.5,
-                    overlap: 7
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.92, blendDuration: 0.05)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                CandidateSelectionExcludedRowHeader(
+                    dateText: slot.collapsedDateText(calendar: calendar),
+                    timeText: slot.timeRangeText,
+                    reasonText: reasonText,
+                    tint: reasonTint,
+                    showsChevron: canExpand,
+                    isExpanded: isExpanded
                 )
             }
+            .buttonStyle(.plain)
 
-            Text(reasonText)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(stageKind.tint)
-                .lineLimit(1)
+            if canExpand && isExpanded {
+                Divider()
+                    .padding(.leading, 12)
+
+                expandedDetails
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 12)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
-        .padding(.horizontal, 12)
-        .frame(minHeight: 64)
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color(uiColor: .separator).opacity(0.1), lineWidth: 0.7)
+        }
+        .animation(.spring(response: 0.34, dampingFraction: 0.92, blendDuration: 0.05), value: isExpanded)
+    }
+
+    @ViewBuilder
+    private var expandedDetails: some View {
+        if let summary {
+            VStack(alignment: .leading, spacing: 10) {
+                if let expandedSummaryMessage {
+                    CandidateSelectionDetailMessage(
+                        text: expandedSummaryMessage.text,
+                        symbolName: expandedSummaryMessage.symbolName,
+                        tint: expandedSummaryMessage.tint
+                    )
+                }
+
+                if stageKind == .availability {
+                    availabilityBreakdown(summary)
+                }
+
+                let issues = responseIssues(from: summary)
+                if issues.isEmpty && stageKind != .finalRanking {
+                    CandidateSelectionDetailMessage(
+                        text: "다른 후보보다 부담 없이 참석 가능한 인원이 적어요.",
+                        symbolName: "person.2.fill",
+                        tint: stageKind.tint
+                    )
+                } else {
+                    ForEach(issues) { issue in
+                        CandidateSelectionIssueRow(issue: issue)
+                    }
+                }
+            }
+        }
+    }
+
+    private var expandedSummaryMessage: (text: String, symbolName: String, tint: Color)? {
+        guard let summary else {
+            return nil
+        }
+
+        switch stageKind {
+        case .criteria:
+            return nil
+        case .requiredAttendance:
+            return (
+                "필참자가 불가해 6명 모두 참석하는 조건을 충족하지 못했어요.",
+                "person.crop.circle.badge.xmark",
+                Color(uiColor: .systemRed)
+            )
+        case .burden:
+            return (
+                "부담 응답 \(summary.burdenCount)명의 사유를 비교해 조정 위험이 큰 시간을 제외했어요.",
+                "exclamationmark.bubble.fill",
+                Color(uiColor: .systemOrange)
+            )
+        case .availability:
+            return (
+                "바로 참석 가능한 인원이 더 많은 후보를 우선했어요.",
+                "person.2.fill",
+                Color(uiColor: .systemBlue)
+            )
+        case .finalRanking:
+            guard let selectionRationale else {
+                return nil
+            }
+
+            return (selectionRationale.detail, selectionRationale.symbolName, selectionRationale.tint)
+        }
+    }
+
+    private func availabilityBreakdown(_ summary: TeamResponseSummary) -> some View {
+        HStack(spacing: 8) {
+            CandidateSelectionResponseCount(
+                title: "가능",
+                count: summary.availableCount,
+                tint: Color(uiColor: .systemGreen)
+            )
+
+            CandidateSelectionResponseCount(
+                title: "부담",
+                count: summary.burdenCount,
+                tint: Color(uiColor: .systemOrange)
+            )
+
+            CandidateSelectionResponseCount(
+                title: "불가",
+                count: summary.unavailableCount,
+                tint: Color(uiColor: .systemRed)
+            )
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func responseIssues(from summary: TeamResponseSummary) -> [CandidateSelectionIssue] {
+        switch stageKind {
+        case .requiredAttendance:
+            return summary.unavailableMembers
+                .filter(\.isRequired)
+                .map {
+                    CandidateSelectionIssue(
+                        member: $0,
+                        title: "필참 불가",
+                        symbolName: "xmark.circle.fill",
+                        tint: Color(uiColor: .systemRed)
+                    )
+                }
+        case .burden:
+            return summary.burdenMembers.map {
+                CandidateSelectionIssue(
+                    member: $0,
+                    title: $0.category.burdenTitle,
+                    symbolName: $0.category.symbolName,
+                    tint: Color(uiColor: .systemOrange)
+                )
+            }
+        case .availability:
+            let burdenIssues = summary.burdenMembers.map {
+                CandidateSelectionIssue(
+                    member: $0,
+                    title: $0.category.burdenTitle,
+                    symbolName: $0.category.symbolName,
+                    tint: Color(uiColor: .systemOrange)
+                )
+            }
+            let unavailableIssues = summary.unavailableMembers.map {
+                CandidateSelectionIssue(
+                    member: $0,
+                    title: "불가",
+                    symbolName: "xmark.circle.fill",
+                    tint: Color(uiColor: .systemRed)
+                )
+            }
+            return burdenIssues + unavailableIssues
+        case .finalRanking:
+            let burdenIssues = summary.burdenMembers.map {
+                CandidateSelectionIssue(
+                    member: $0,
+                    title: $0.category.burdenTitle,
+                    symbolName: $0.category.symbolName,
+                    tint: Color(uiColor: .systemOrange)
+                )
+            }
+            let unavailableIssues = summary.unavailableMembers.map {
+                CandidateSelectionIssue(
+                    member: $0,
+                    title: "불가",
+                    symbolName: "xmark.circle.fill",
+                    tint: Color(uiColor: .systemRed)
+                )
+            }
+            return burdenIssues + unavailableIssues
+        case .criteria:
+            return []
+        }
+    }
+}
+
+private struct CandidateSelectionDetailMessage: View {
+    let text: String
+    let symbolName: String
+    let tint: Color
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: symbolName)
+                .font(.system(size: 12, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tint)
+                .frame(width: 28, height: 28)
+                .background(tint.opacity(0.1), in: Circle())
+
+            Text(text)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .lineSpacing(2)
+                .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+        }
+        .padding(10)
+        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct CandidateSelectionIssue: Identifiable {
+    let member: TeamResponseReason
+    let title: String
+    let symbolName: String
+    let tint: Color
+
+    var id: String {
+        "\(member.id)-\(title)"
+    }
+}
+
+private struct CandidateSelectionIssueRow: View {
+    let issue: CandidateSelectionIssue
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            ProfileAvatar(
+                name: issue.member.name,
+                fallback: ProfileAsset.fallbackText(for: issue.member.name),
+                size: 30,
+                tint: issue.tint,
+                borderColor: Color.clear,
+                borderWidth: 0
+            )
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 7) {
+                    Text(issue.member.name)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    HStack(spacing: 4) {
+                        Image(systemName: issue.symbolName)
+                            .font(.system(size: 9, weight: .bold))
+
+                        Text(issue.title)
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(issue.tint)
+                }
+
+                Text(issue.member.displayReason)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .lineSpacing(2)
+                    .frame(maxWidth: .infinity, minHeight: 34, alignment: .topLeading)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .frame(minHeight: 64)
+        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct CandidateSelectionResponseCount: View {
+    let title: String
+    let count: Int
+    let tint: Color
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(tint)
+                .frame(width: 5, height: 5)
+
+            Text("\(title) \(count)")
+                .font(.system(size: 11, weight: .semibold))
+                .monospacedDigit()
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 8)
+        .frame(height: 25)
+        .background(tint.opacity(0.09), in: Capsule())
     }
 }
 
@@ -5330,62 +6101,75 @@ private struct CandidateSelectionFinalRow: View {
         candidate.rank == 0 ? Color(uiColor: .systemBlue) : Color(uiColor: .systemIndigo)
     }
 
+    private var attendableCount: Int {
+        candidate.summary.availableCount + candidate.summary.burdenCount
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
-            HStack(alignment: .top, spacing: 10) {
+            HStack(spacing: 8) {
                 Text(candidate.rank == 0 ? "추천" : "차순위")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(tint)
-                    .padding(.horizontal, 8)
-                    .frame(height: 24)
+                    .padding(.horizontal, 9)
+                    .frame(height: 25)
                     .background(tint.opacity(0.1), in: Capsule())
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(candidate.slot.fullDateText(calendar: calendar))
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.primary)
+                Spacer(minLength: 8)
 
-                    Text(candidate.slot.timeRangeText)
-                        .font(.system(size: 13, weight: .medium))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer(minLength: 0)
+                Text(candidate.slot.fullDateText(calendar: calendar))
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
 
-            HStack(spacing: 10) {
-                AvatarStack(
-                    names: candidate.attendeeNames,
-                    maxVisible: 3,
-                    size: 25,
-                    borderColor: Color(uiColor: .secondarySystemGroupedBackground),
-                    borderWidth: 1.5,
-                    overlap: 8
-                )
+            Text(candidate.slot.timeRangeText)
+                .font(.system(size: 21, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(.primary)
+                .lineLimit(1)
 
-                Spacer(minLength: 0)
+            Text(candidate.rationale.title)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
 
-                Text("가능 \(candidate.summary.availableCount)")
-                    .foregroundStyle(Color(uiColor: .systemGreen))
+            HStack(spacing: 6) {
+                Image(systemName: "person.2.fill")
+                    .font(.system(size: 11, weight: .semibold))
 
-                Text("부담 \(candidate.summary.burdenCount)")
-                    .foregroundStyle(Color(uiColor: .systemOrange))
+                Text("\(attendableCount)명 참석")
+
+                Text("·")
+                    .foregroundStyle(Color(uiColor: .tertiaryLabel))
+
+                Text(candidate.summary.burdenCount == 0 ? "부담 없음" : "부담 \(candidate.summary.burdenCount)명")
+                    .foregroundStyle(
+                        candidate.summary.burdenCount == 0
+                            ? Color(uiColor: .systemGreen)
+                            : Color(uiColor: .systemOrange)
+                    )
             }
-            .font(.system(size: 12, weight: .semibold))
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(.secondary)
         }
-        .padding(13)
-        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(tint.opacity(candidate.rank == 0 ? 0.22 : 0.1), lineWidth: 0.8)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(tint.opacity(candidate.rank == 0 ? 0.2 : 0.1), lineWidth: 0.8)
         }
     }
 }
 
 private struct SequentialDerivationTitle: View {
     let text: String
-    let visibleCharacterCount: Int
+    let initialDelay: Double
+    let characterInterval: Double
+    let characterAnimationDuration: Double
+    @State private var visibleCharacterCount = 0
 
     private var characters: [String] {
         text.map(String.init)
@@ -5411,13 +6195,35 @@ private struct SequentialDerivationTitle: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .id(text)
         .transition(.opacity.combined(with: .offset(y: 3)))
+        .task(id: text) {
+            visibleCharacterCount = 0
+
+            do {
+                try await Task.sleep(for: .seconds(initialDelay))
+
+                for index in characters.indices {
+                    try Task.checkCancellation()
+
+                    withAnimation(.easeInOut(duration: characterAnimationDuration)) {
+                        visibleCharacterCount = index + 1
+                    }
+
+                    if index < characters.count - 1 {
+                        try await Task.sleep(for: .seconds(characterInterval))
+                    }
+                }
+            } catch {
+                return
+            }
+        }
     }
 }
 
 private struct OnboardingResponseBlockStage: View {
-    let phase: MeetingDerivationPhase
     let slots: [DerivationResponseSlot]
-    let visibleBlockCount: Int
+    let revealsBlocks: Bool
+    let revealInterval: Double
+    let revealAnimationResponse: Double
     let criteria: DerivationCriteria
     let dimsCriteriaExcludedSlots: Bool
     let dimsUnavailableSlots: Bool
@@ -5438,12 +6244,6 @@ private struct OnboardingResponseBlockStage: View {
     private let columnSpacing: CGFloat = 7
     private let rowSpacing: CGFloat = 7
     private let rowHeight: CGFloat = 58
-
-    private var visibleSlots: [DerivationResponseSlot] {
-        displayedSlots.enumerated().compactMap { index, slot in
-            index < visibleBlockCount ? slot : nil
-        }
-    }
 
     private var displayedSlots: [DerivationResponseSlot] {
         let filteredSlots = slots.filter { slot in
@@ -5481,26 +6281,28 @@ private struct OnboardingResponseBlockStage: View {
             )
 
             ZStack(alignment: .topLeading) {
-                ForEach(Array(visibleSlots.enumerated()), id: \.element.id) { index, slot in
+                ForEach(Array(displayedSlots.enumerated()), id: \.element.id) { index, slot in
                     OnboardingResponseBlockCard(
                         slot: slot,
                         width: columnWidth,
                         rowHeight: rowHeight,
-                        phase: phase,
                         isDimmed: isDimmed(slot)
                     )
+                    .equatable()
                     .position(
                         x: CGFloat(slot.dayIndex) * (columnWidth + columnSpacing) + columnWidth / 2,
                         y: CGFloat(slot.rowIndex) * (rowHeight + rowSpacing) + rowHeight / 2
                     )
+                    .opacity(revealsBlocks ? 1 : 0)
+                    .scaleEffect(revealsBlocks ? 1 : 0.96)
                     .animation(
-                        .spring(response: 0.64, dampingFraction: 0.91)
-                            .delay(Double(index % 5) * 0.025 + Double(index / 5) * 0.04),
-                        value: visibleBlockCount
-                    )
-                    .animation(
-                        .easeInOut(duration: 0.48),
-                        value: isDimmed(slot)
+                        .spring(response: revealAnimationResponse, dampingFraction: 0.88)
+                            .delay(
+                                Double(index) * revealInterval
+                                    + Double(index % columnCount) * 0.025
+                                    + Double(index / columnCount) * 0.04
+                            ),
+                        value: revealsBlocks
                     )
                     .transition(
                         .asymmetric(
@@ -5513,8 +6315,6 @@ private struct OnboardingResponseBlockStage: View {
             .frame(width: proxy.size.width, height: stageHeight, alignment: .topLeading)
         }
         .frame(height: stageHeight)
-        .animation(.spring(response: 0.68, dampingFraction: 0.9), value: phase)
-        .animation(.spring(response: 0.62, dampingFraction: 0.9), value: displayedSlots.map(\.id).joined(separator: "|"))
     }
 
     private var stageHeight: CGFloat {
@@ -5560,11 +6360,10 @@ private struct OnboardingResponseBlockStage: View {
 
 }
 
-private struct OnboardingResponseBlockCard: View {
+private struct OnboardingResponseBlockCard: View, Equatable {
     let slot: DerivationResponseSlot
     let width: CGFloat
     let rowHeight: CGFloat
-    let phase: MeetingDerivationPhase
     let isDimmed: Bool
 
     private var hasRequiredUnavailable: Bool {
