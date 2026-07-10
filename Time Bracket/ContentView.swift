@@ -1259,6 +1259,28 @@ private struct DerivationCriteriaSheet: View {
                                 .font(.system(size: 13, weight: .medium))
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
+
+                            Divider()
+                                .padding(.top, 2)
+
+                            HStack(alignment: .top, spacing: 9) {
+                                Image(systemName: "info.circle.fill")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .symbolRenderingMode(.hierarchical)
+                                    .foregroundStyle(Color(uiColor: .secondaryLabel))
+                                    .frame(width: 20, height: 20)
+
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("부담 비교 기준")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(.primary)
+
+                                    Text("후보가 비슷하면 부담 인원과 필참 여부를 보고, 일정·이동처럼 조정하기 어려운 사유를 함께 고려합니다.")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
                         }
                     }
 
@@ -3765,11 +3787,11 @@ private struct CandidateSelectionStage: Identifiable {
             case .requiredAttendance:
                 return "필참자가 불가로 응답한 시간은 후보에서 제외했어요."
             case .burden:
-                return "일정과 이동처럼 부담이 큰 시간을 뒤로 미뤘어요."
+                return "부담 인원과 사유의 조정 난이도를 함께 비교했어요."
             case .availability:
                 return "부담 없이 바로 참석 가능한 인원이 가장 많은 시간을 남겼어요."
             case .finalRanking:
-                return "조건이 비슷한 후보 중 안정성과 선택 폭을 고려해 2안을 남겼어요."
+                return "비슷한 조건의 후보를 비교해 안정적인 2안을 남겼어요."
             }
         }
 
@@ -3780,11 +3802,11 @@ private struct CandidateSelectionStage: Identifiable {
             case .requiredAttendance:
                 return "필참자가 불가로 응답한 시간은\n후보에서 제외했어요."
             case .burden:
-                return "일정과 이동처럼 부담이 큰 시간을\n뒤로 미뤘어요."
+                return "부담 인원과 사유의 조정 난이도를\n함께 비교했어요."
             case .availability:
                 return "부담 없이 바로 참석 가능한 인원이\n가장 많은 시간을 남겼어요."
             case .finalRanking:
-                return "조건이 비슷한 후보 중 안정성과 선택 폭을 고려해\n2안을 남겼어요."
+                return "비슷한 조건의 후보를 비교해\n안정적인 2안을 남겼어요."
             }
         }
 
@@ -5346,40 +5368,17 @@ private struct CandidateSelectionProcessView: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal) {
                 HStack(spacing: 8) {
-                    ForEach(Array(stages.enumerated()), id: \.element.id) { index, stage in
+                    ForEach(stages) { stage in
                         Button {
                             withAnimation(.spring(response: 0.4, dampingFraction: 0.9)) {
                                 selectedStageID = stage.id
                                 proxy.scrollTo(stage.id, anchor: .center)
                             }
                         } label: {
-                            HStack(spacing: 6) {
-                                Text("\(index + 1)")
-                                    .font(.system(size: 11, weight: .bold))
-                                    .monospacedDigit()
-                                    .foregroundStyle(selectedStageID == stage.id ? Color.white : Color(uiColor: .secondaryLabel))
-                                    .frame(width: 20, height: 20)
-                                    .background(
-                                        selectedStageID == stage.id
-                                            ? Color.white.opacity(0.16)
-                                            : Color(uiColor: .secondarySystemGroupedBackground),
-                                        in: Circle()
-                                    )
-
-                                Text(stage.kind.title)
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(selectedStageID == stage.id ? Color.white : Color(uiColor: .secondaryLabel))
-
-                                Text("\(stage.remainingCount)")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .monospacedDigit()
-                                    .foregroundStyle(
-                                        selectedStageID == stage.id
-                                            ? Color.white.opacity(0.72)
-                                            : Color(uiColor: .tertiaryLabel)
-                                    )
-                            }
-                            .padding(.horizontal, 10)
+                            Text(stage.kind.title)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(selectedStageID == stage.id ? Color.white : Color(uiColor: .secondaryLabel))
+                                .padding(.horizontal, 14)
                             .frame(height: 38)
                             .background(
                                 selectedStageID == stage.id ? Color.primary : Color(uiColor: .systemBackground),
@@ -5426,9 +5425,7 @@ private struct CandidateSelectionStagePage: View {
                 stageHeader
                 countFlow
                     .padding(.top, 18)
-
-                Divider()
-                    .padding(.vertical, 18)
+                    .padding(.bottom, 20)
 
                 if stage.kind == .finalRanking {
                     finalCandidateSection
@@ -5473,6 +5470,7 @@ private struct CandidateSelectionStagePage: View {
                 .foregroundStyle(.secondary)
                 .lineSpacing(2)
             }
+            .layoutPriority(1)
 
             Spacer(minLength: 4)
         }
@@ -5864,7 +5862,7 @@ private struct CandidateSelectionSlotRow: View {
     }
 
     private var expandedSummaryMessage: (text: String, symbolName: String, tint: Color)? {
-        guard let summary else {
+        guard summary != nil else {
             return nil
         }
 
@@ -5879,7 +5877,7 @@ private struct CandidateSelectionSlotRow: View {
             )
         case .burden:
             return (
-                "부담 응답 \(summary.burdenCount)명의 사유를 비교해 조정 위험이 큰 시간을 제외했어요.",
+                "부담 인원과 사유의 조정 난이도를 함께 비교해 우선순위를 낮췄어요.",
                 "exclamationmark.bubble.fill",
                 Color(uiColor: .systemOrange)
             )
@@ -5998,18 +5996,18 @@ private struct CandidateSelectionDetailMessage: View {
                 .font(.system(size: 12, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(tint)
-                .frame(width: 28, height: 28)
+                .frame(width: 30, height: 30)
                 .background(tint.opacity(0.1), in: Circle())
 
             Text(text)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
                 .lineSpacing(2)
                 .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
         }
-        .padding(10)
-        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
     }
 }
 
@@ -6056,11 +6054,12 @@ private struct CandidateSelectionIssueRow: View {
                 }
 
                 Text(issue.member.displayReason)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .lineSpacing(2)
-                    .frame(maxWidth: .infinity, minHeight: 34, alignment: .topLeading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             Spacer(minLength: 0)
@@ -6151,7 +6150,7 @@ private struct CandidateSelectionFinalRow: View {
                             : Color(uiColor: .systemOrange)
                     )
             }
-            .font(.system(size: 12, weight: .medium))
+            .font(.system(size: 13, weight: .medium))
             .foregroundStyle(.secondary)
         }
         .padding(14)
