@@ -55,7 +55,8 @@ struct ContentView: View {
                 meeting: selectedMeeting,
                 calendar: calendar,
                 onShareWithMembers: shareHostAvailability,
-                onCompareResponses: compareCandidateTimes
+                onCompareResponses: compareCandidateTimes,
+                onConfirmMeeting: confirmMeeting
             )
             .tag(TopTab.calendar)
             .tabItem {
@@ -139,6 +140,20 @@ struct ContentView: View {
         }
 
         let updatedMeeting = meetings[meetingIndex].readyForComparison(criteria: criteria)
+        meetings[meetingIndex] = updatedMeeting
+        selectedMeeting = updatedMeeting
+    }
+
+    private func confirmMeeting(_ meetingID: String, candidate: FinalDerivationCandidate) {
+        guard let meetingIndex = meetings.firstIndex(where: { $0.id == meetingID }) else {
+            return
+        }
+
+        let updatedMeeting = meetings[meetingIndex].confirmed(
+            on: candidate.slot.date,
+            hour: candidate.slot.hour,
+            calendar: calendar
+        )
         meetings[meetingIndex] = updatedMeeting
         selectedMeeting = updatedMeeting
     }
@@ -245,6 +260,7 @@ private struct MeetingWorkspaceScreen: View {
     let calendar: Calendar
     let onShareWithMembers: (String, [AvailabilitySlot: AvailabilityEntry]) -> Void
     let onCompareResponses: (String, DerivationCriteria) -> Void
+    let onConfirmMeeting: (String, FinalDerivationCandidate) -> Void
 
     var body: some View {
         if let meeting {
@@ -267,6 +283,9 @@ private struct MeetingWorkspaceScreen: View {
                     meeting: meeting,
                     onAdjustCriteria: { criteria in
                         onCompareResponses(meeting.id, criteria)
+                    },
+                    onConfirmMeeting: { candidate in
+                        onConfirmMeeting(meeting.id, candidate)
                     }
                 )
             case .confirmed:
@@ -2420,6 +2439,7 @@ private struct ResponseCollectionScreen: View {
 private struct BracketReviewScreen: View {
     let meeting: HomeMeeting
     let onAdjustCriteria: (DerivationCriteria) -> Void
+    let onConfirmMeeting: (FinalDerivationCandidate) -> Void
     private let calendar: Calendar
     private let derivationSlots: [DerivationResponseSlot]
     private let responseSummaries: [AvailabilitySlot: TeamResponseSummary]
@@ -2441,13 +2461,15 @@ private struct BracketReviewScreen: View {
     @State private var selectedFinalCandidateID: String?
     @State private var isEliminatedCandidatesPresented = false
     @State private var isDerivationCriteriaPresented = false
+    @State private var confirmationCandidate: FinalDerivationCandidate?
     @State private var adjustedCriteria = DerivationCriteria.default
     @State private var derivationSequenceTask: Task<Void, Never>?
     @State private var phaseAnimationTask: Task<Void, Never>?
 
     init(
         meeting: HomeMeeting,
-        onAdjustCriteria: @escaping (DerivationCriteria) -> Void
+        onAdjustCriteria: @escaping (DerivationCriteria) -> Void,
+        onConfirmMeeting: @escaping (FinalDerivationCandidate) -> Void
     ) {
         var calendar = Calendar.current
         calendar.locale = Locale(identifier: "ko_KR")
@@ -2457,6 +2479,7 @@ private struct BracketReviewScreen: View {
 
         self.meeting = meeting
         self.onAdjustCriteria = onAdjustCriteria
+        self.onConfirmMeeting = onConfirmMeeting
         self.calendar = calendar
         self.derivationSlots = slots
         self.responseSummaries = TeamResponseSummary.makeSummaries(
@@ -2709,6 +2732,9 @@ private struct BracketReviewScreen: View {
                     onAdjustCriteria: {
                         adjustedCriteria = meeting.derivationCriteria
                         isDerivationCriteriaPresented = true
+                    },
+                    onConfirm: { candidate in
+                        confirmationCandidate = candidate
                     }
                 )
                 .padding(.top, 24)
@@ -2757,6 +2783,17 @@ private struct BracketReviewScreen: View {
                 responseSummaries: responseSummaries,
                 initialCandidateCount: derivationSlots.count,
                 calendar: calendar
+            )
+        }
+        .fullScreenCover(item: $confirmationCandidate) { candidate in
+            MeetingConfirmationSuccessView(
+                meeting: meeting,
+                candidate: candidate,
+                calendar: calendar,
+                onComplete: {
+                    onConfirmMeeting(candidate)
+                    confirmationCandidate = nil
+                }
             )
         }
         .sheet(isPresented: $isDerivationCriteriaPresented) {
@@ -4174,6 +4211,7 @@ private struct FinalCandidateComparisonView: View {
     let selectionStageCount: Int
     let onShowEliminated: () -> Void
     let onAdjustCriteria: () -> Void
+    let onConfirm: (FinalDerivationCandidate) -> Void
     @State private var detailCandidate: FinalDerivationCandidate?
     @State private var didRevealCandidates = false
     @State private var didCompleteCandidateIntro = false
@@ -4273,7 +4311,11 @@ private struct FinalCandidateComparisonView: View {
                 .frame(maxWidth: .infinity)
 
                 Button {
-                    print("Confirm final candidate: \(selectedCandidateID ?? "none")")
+                    guard let selectedCandidate else {
+                        return
+                    }
+
+                    onConfirm(selectedCandidate)
                 } label: {
                     Text(confirmButtonTitle)
                         .font(.system(size: 16, weight: .medium))
@@ -4333,6 +4375,538 @@ private struct FinalCandidateComparisonView: View {
         withAnimation(.spring(response: 0.56, dampingFraction: 0.92, blendDuration: 0.14)) {
             selectedCandidateID = candidate.id
         }
+    }
+}
+
+private struct MeetingConfirmationSuccessView: View {
+    let meeting: HomeMeeting
+    let candidate: FinalDerivationCandidate
+    let calendar: Calendar
+    let onComplete: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    @State private var circleProgress: CGFloat = 0
+    @State private var checkProgress: CGFloat = 0
+    @State private var isTitleVisible = false
+    @State private var isSummaryVisible = false
+    @State private var isActionVisible = false
+    @State private var confettiTrigger = 0
+    @State private var animationTask: Task<Void, Never>?
+
+    private let successTint = Color(uiColor: .systemGreen)
+
+    var body: some View {
+        ZStack {
+            Color(uiColor: .systemBackground)
+                .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                Spacer(minLength: 56)
+
+                AnimatedConfirmationCheckmark(
+                    circleProgress: circleProgress,
+                    checkProgress: checkProgress,
+                    tint: successTint
+                )
+                .frame(width: 94, height: 94)
+                .accessibilityHidden(true)
+
+                VStack(spacing: 8) {
+                    Text("회의가 확정됐어요")
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundStyle(.primary)
+
+                    Text("\(meeting.memberCount)명의 조율 결과를 반영했습니다.")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.top, 24)
+                .opacity(isTitleVisible ? 1 : 0)
+                .offset(y: isTitleVisible ? 0 : 8)
+
+                confirmationSummary
+                    .padding(.top, 30)
+                    .opacity(isSummaryVisible ? 1 : 0)
+                    .offset(y: isSummaryVisible ? 0 : 10)
+
+                Spacer(minLength: 34)
+
+                Button(action: onComplete) {
+                    Text("완료")
+                        .font(.system(size: 16, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.roundedRectangle(radius: 16))
+                .controlSize(.large)
+                .tint(Color(uiColor: .systemBlue))
+                .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                .padding(.bottom, 10)
+                .opacity(isActionVisible ? 1 : 0)
+                .offset(y: isActionVisible ? 0 : 8)
+                .disabled(!isActionVisible)
+            }
+
+            CelebrationConfettiView(
+                trigger: confettiTrigger,
+                isEnabled: !reduceMotion
+            )
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+        }
+        .preferredColorScheme(.light)
+        .interactiveDismissDisabled()
+        .onAppear(perform: startConfirmationAnimation)
+        .onDisappear {
+            animationTask?.cancel()
+        }
+    }
+
+    private var confirmationSummary: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(meeting.title)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Text(meeting.sectionName)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(candidate.slot.fullDateText(calendar: calendar))
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.secondary)
+
+                Text(candidate.slot.timeRangeText)
+                    .font(.system(size: 32, weight: .bold))
+                    .monospacedDigit()
+                    .foregroundStyle(.primary)
+            }
+
+            HStack(spacing: 10) {
+                AvatarStack(
+                    names: meeting.memberInitials,
+                    maxVisible: 3,
+                    size: 28,
+                    borderColor: Color(uiColor: .secondarySystemBackground)
+                )
+
+                Text("참석자 \(meeting.memberCount)명")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            Color(uiColor: .secondarySystemBackground),
+            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+        )
+        .padding(.horizontal, LayoutMetrics.horizontalPadding)
+    }
+
+    private func startConfirmationAnimation() {
+        animationTask?.cancel()
+        circleProgress = 0
+        checkProgress = 0
+        isTitleVisible = false
+        isSummaryVisible = false
+        isActionVisible = false
+        confettiTrigger = 0
+
+        guard !reduceMotion else {
+            circleProgress = 1
+            checkProgress = 1
+            isTitleVisible = true
+            isSummaryVisible = true
+            isActionVisible = true
+            return
+        }
+
+        animationTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
+
+            withAnimation(.easeInOut(duration: 0.72)) {
+                circleProgress = 1
+            }
+
+            try? await Task.sleep(nanoseconds: 380_000_000)
+            guard !Task.isCancelled else { return }
+
+            withAnimation(.easeOut(duration: 0.48)) {
+                checkProgress = 1
+            }
+
+            try? await Task.sleep(nanoseconds: 330_000_000)
+            guard !Task.isCancelled else { return }
+
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            confettiTrigger += 1
+
+            withAnimation(.easeOut(duration: 0.42)) {
+                isTitleVisible = true
+            }
+
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            guard !Task.isCancelled else { return }
+
+            withAnimation(.easeOut(duration: 0.46)) {
+                isSummaryVisible = true
+            }
+
+            try? await Task.sleep(nanoseconds: 220_000_000)
+            guard !Task.isCancelled else { return }
+
+            withAnimation(.easeOut(duration: 0.38)) {
+                isActionVisible = true
+            }
+        }
+    }
+}
+
+private struct AnimatedConfirmationCheckmark: View {
+    let circleProgress: CGFloat
+    let checkProgress: CGFloat
+    let tint: Color
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(tint.opacity(0.08 * checkProgress))
+
+            Circle()
+                .stroke(tint.opacity(0.12), lineWidth: 4)
+
+            Circle()
+                .trim(from: 0, to: circleProgress)
+                .stroke(
+                    tint,
+                    style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round)
+                )
+                .rotationEffect(.degrees(-90))
+
+            ConfirmationCheckmarkShape()
+                .trim(from: 0, to: checkProgress)
+                .stroke(
+                    tint,
+                    style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round)
+                )
+                .padding(24)
+        }
+        .scaleEffect(0.96 + checkProgress * 0.04)
+    }
+}
+
+private struct ConfirmationCheckmarkShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX + rect.width * 0.08, y: rect.minY + rect.height * 0.53))
+        path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.39, y: rect.minY + rect.height * 0.82))
+        path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.94, y: rect.minY + rect.height * 0.18))
+        return path
+    }
+}
+
+private struct CelebrationConfettiView: UIViewRepresentable {
+    let trigger: Int
+    let isEnabled: Bool
+
+    func makeUIView(context: Context) -> CelebrationConfettiCanvas {
+        CelebrationConfettiCanvas()
+    }
+
+    func updateUIView(_ uiView: CelebrationConfettiCanvas, context: Context) {
+        uiView.setEmissionToken(isEnabled ? trigger : 0)
+    }
+}
+
+private final class CelebrationConfettiCanvas: UIView {
+    private enum ThreadsConfettiStyle {
+        case circle
+        case rectangle
+    }
+
+    private struct ThreadsConfettiParticle {
+        let container: CATransformLayer
+    }
+
+    private var lastEmissionToken = 0
+    private var pendingEmissionToken = 0
+    private var activeParticleLayers: [CALayer] = []
+    private var cleanupWorkItem: DispatchWorkItem?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        backgroundColor = .clear
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        playIfNeeded()
+    }
+
+    func setEmissionToken(_ token: Int) {
+        guard token > lastEmissionToken else {
+            return
+        }
+
+        pendingEmissionToken = token
+        setNeedsLayout()
+        playIfNeeded()
+    }
+
+    private func playIfNeeded() {
+        guard pendingEmissionToken > lastEmissionToken,
+              bounds.width > 0,
+              bounds.height > 0 else {
+            return
+        }
+
+        lastEmissionToken = pendingEmissionToken
+        cleanupWorkItem?.cancel()
+        activeParticleLayers.forEach {
+            $0.removeAllAnimations()
+            $0.removeFromSuperlayer()
+        }
+        activeParticleLayers.removeAll()
+
+        let particleCountPerSide = 24
+
+        for side in 0..<2 {
+            for index in 0..<particleCountPerSide {
+                let particle = makeParticle(side: side, index: index)
+                let animation = makeParticleAnimation(
+                    side: side,
+                    index: index,
+                    size: bounds.size
+                )
+
+                layer.addSublayer(particle.container)
+                particle.container.add(animation, forKey: "threads.confetti")
+                activeParticleLayers.append(particle.container)
+            }
+        }
+
+        let cleanup = DispatchWorkItem { [weak self] in
+            self?.activeParticleLayers.forEach {
+                $0.removeAllAnimations()
+                $0.removeFromSuperlayer()
+            }
+            self?.activeParticleLayers.removeAll()
+        }
+        cleanupWorkItem = cleanup
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.1, execute: cleanup)
+    }
+
+    private func makeParticle(side: Int, index: Int) -> ThreadsConfettiParticle {
+        var random = DeterministicConfettiRandom(seed: seed(side: side, index: index))
+        let color = Self.palette[(index + side * 3) % Self.palette.count]
+        let container = CATransformLayer()
+        container.opacity = 0
+
+        switch particleStyle(for: index) {
+        case .circle:
+            let diameter = random.value(in: 8.5...12.3)
+            container.bounds = CGRect(x: 0, y: 0, width: diameter, height: diameter)
+            addSolidFaces(
+                to: container,
+                color: color,
+                cornerRadius: diameter / 2
+            )
+            return ThreadsConfettiParticle(container: container)
+
+        case .rectangle:
+            let width = random.value(in: 7.0...10.3)
+            let height = random.value(in: 14.0...21.3)
+            container.bounds = CGRect(x: 0, y: 0, width: width, height: height)
+            addSolidFaces(
+                to: container,
+                color: color,
+                cornerRadius: min(width, height) * 0.12
+            )
+            return ThreadsConfettiParticle(container: container)
+        }
+    }
+
+    private func addSolidFaces(
+        to container: CATransformLayer,
+        color: UIColor,
+        cornerRadius: CGFloat
+    ) {
+        let back = makeSolidFace(
+            bounds: container.bounds,
+            color: Self.backFaceColor,
+            cornerRadius: cornerRadius,
+            isBackFace: true
+        )
+        let front = makeSolidFace(
+            bounds: container.bounds,
+            color: color,
+            cornerRadius: cornerRadius,
+            isBackFace: false
+        )
+        container.addSublayer(back)
+        container.addSublayer(front)
+    }
+
+    private func makeSolidFace(
+        bounds: CGRect,
+        color: UIColor,
+        cornerRadius: CGFloat,
+        isBackFace: Bool
+    ) -> CALayer {
+        let face = CALayer()
+        face.frame = bounds
+        face.backgroundColor = color.cgColor
+        face.cornerRadius = cornerRadius
+        face.isDoubleSided = false
+
+        if isBackFace {
+            face.borderColor = UIColor.black.withAlphaComponent(0.055).cgColor
+            face.borderWidth = 0.35
+            face.transform = backFaceTransform
+        }
+        return face
+    }
+
+    private var backFaceTransform: CATransform3D {
+        var transform = CATransform3DMakeRotation(.pi, 0, 1, 0)
+        transform = CATransform3DTranslate(transform, 0, 0, 0.02)
+        return transform
+    }
+
+    private func makeParticleAnimation(
+        side: Int,
+        index: Int,
+        size: CGSize
+    ) -> CAAnimationGroup {
+        var random = DeterministicConfettiRandom(seed: seed(side: side, index: index) ^ 0xA5A5_A5A5)
+        let direction: CGFloat = side == 0 ? 1 : -1
+        let startX: CGFloat = side == 0 ? -12 : size.width + 12
+        let startY = random.value(in: size.height * 0.07...size.height * 0.72)
+        let duration = random.value(in: 1.82...2.48)
+        let delay = random.value(in: 0...0.18)
+        let horizontalTravel = random.value(in: size.width * 0.42...size.width * 0.96)
+        let verticalVelocity = random.value(in: -118...72)
+        let gravity = random.value(in: 98...162)
+        let waveAmplitude = random.value(in: 3...12)
+        let waveFrequency = random.value(in: 2.6...5.2)
+        let wavePhase = random.value(in: 0...(CGFloat.pi * 2))
+        let rotationDirection: CGFloat = random.nextUnit() > 0.5 ? 1 : -1
+        let rotationTurns = random.value(in: 1.5...3.6) * rotationDirection
+        let flipDirection: CGFloat = random.nextUnit() > 0.5 ? 1 : -1
+        let flipTurns = random.value(in: 1.35...3.2) * flipDirection
+        let initialRotation = random.value(in: 0...(CGFloat.pi * 2))
+        let initialFlip = random.value(in: 0...(CGFloat.pi * 2))
+        let sampleCount = 42
+        let keyTimes = (0..<sampleCount).map {
+            NSNumber(value: Double($0) / Double(sampleCount - 1))
+        }
+        let points: [CGPoint] = (0..<sampleCount).map { sampleIndex in
+            let progress = CGFloat(sampleIndex) / CGFloat(sampleCount - 1)
+            let elapsed = duration * progress
+            let horizontalProgress = 1 - exp(-2.25 * elapsed)
+            let wave = sin(elapsed * waveFrequency + wavePhase) * waveAmplitude * progress
+            let x = startX + direction * horizontalTravel * horizontalProgress + wave
+            let y = startY + verticalVelocity * elapsed + 0.5 * gravity * elapsed * elapsed
+            return CGPoint(x: x, y: y)
+        }
+
+        let position = CAKeyframeAnimation(keyPath: "position")
+        position.values = points.map(NSValue.init(cgPoint:))
+        position.keyTimes = keyTimes
+        position.calculationMode = .linear
+        position.duration = duration
+
+        let transform = CAKeyframeAnimation(keyPath: "transform")
+        transform.values = (0..<sampleCount).map { sampleIndex in
+            let progress = CGFloat(sampleIndex) / CGFloat(sampleCount - 1)
+            let zAngle = initialRotation + rotationTurns * .pi * 2 * progress
+            let yAngle = initialFlip + flipTurns * .pi * 2 * progress
+            let scale = 0.86 + sin(progress * .pi) * 0.16 - progress * 0.08
+
+            var value = CATransform3DIdentity
+            value.m34 = -1 / 500
+            value = CATransform3DRotate(value, zAngle, 0, 0, 1)
+            value = CATransform3DRotate(value, yAngle, 0, 1, 0)
+            value = CATransform3DScale(value, scale, scale, scale)
+            return NSValue(caTransform3D: value)
+        }
+        transform.keyTimes = keyTimes
+        transform.calculationMode = .linear
+        transform.duration = duration
+
+        let opacity = CAKeyframeAnimation(keyPath: "opacity")
+        opacity.values = [0, 1, 1, 0.68, 0]
+        opacity.keyTimes = [0, 0.03, 0.55, 0.82, 1]
+        opacity.duration = duration
+
+        let group = CAAnimationGroup()
+        group.animations = [position, transform, opacity]
+        group.beginTime = CACurrentMediaTime() + delay
+        group.duration = duration
+        group.fillMode = .both
+        group.isRemovedOnCompletion = false
+        return group
+    }
+
+    private func particleStyle(for index: Int) -> ThreadsConfettiStyle {
+        switch index % 6 {
+        case 0, 4:
+            return .circle
+        default:
+            return .rectangle
+        }
+    }
+
+    private func seed(side: Int, index: Int) -> UInt64 {
+        UInt64(7_919 + side * 10_007 + index * 1_009)
+    }
+
+    private static let palette: [UIColor] = [
+        UIColor(red: 1.00, green: 0.02, blue: 0.45, alpha: 1),
+        UIColor(red: 0.83, green: 0.04, blue: 0.79, alpha: 1),
+        UIColor(red: 0.48, green: 0.23, blue: 0.98, alpha: 1),
+        UIColor(red: 1.00, green: 0.81, blue: 0.02, alpha: 1),
+        UIColor(red: 1.00, green: 0.43, blue: 0.04, alpha: 1),
+        UIColor(red: 0.96, green: 0.14, blue: 0.22, alpha: 1),
+        UIColor(red: 1.00, green: 0.43, blue: 0.66, alpha: 1),
+        UIColor(red: 0.78, green: 0.73, blue: 0.82, alpha: 1)
+    ]
+
+    private static let backFaceColor = UIColor(white: 0.97, alpha: 1)
+}
+
+private struct DeterministicConfettiRandom {
+    private var state: UInt64
+
+    init(seed: UInt64) {
+        state = max(seed, 1)
+    }
+
+    mutating func nextUnit() -> CGFloat {
+        state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+        let value = Double(state >> 11) / Double(1 << 53)
+        return CGFloat(value)
+    }
+
+    mutating func value(in range: ClosedRange<CGFloat>) -> CGFloat {
+        range.lowerBound + (range.upperBound - range.lowerBound) * nextUnit()
     }
 }
 
@@ -12349,6 +12923,38 @@ private struct HomeMeeting: Identifiable {
             candidateEndDate: candidateEndDate,
             confirmedDay: confirmedDay,
             confirmedWeekday: confirmedWeekday
+        )
+    }
+
+    func confirmed(on date: Date, hour: Int, calendar: Calendar) -> HomeMeeting {
+        let weekdaySymbols = ["일", "월", "화", "수", "목", "금", "토"]
+        let weekdayIndex = max(calendar.component(.weekday, from: date) - 1, 0)
+        let weekday = weekdaySymbols[min(weekdayIndex, weekdaySymbols.count - 1)]
+        let month = calendar.component(.month, from: date)
+        let day = calendar.component(.day, from: date)
+        let confirmedTimeRange = String(format: "%02d:00 - %02d:00", hour, hour + 1)
+
+        return HomeMeeting(
+            id: id,
+            title: title,
+            sectionName: sectionName,
+            subtitle: subtitle,
+            dateRange: "\(month)월 \(day)일",
+            timeRange: confirmedTimeRange,
+            excludedTimeRule: excludedTimeRule,
+            derivationCriteria: derivationCriteria,
+            hostAvailabilityEntries: hostAvailabilityEntries,
+            memberCount: memberCount,
+            respondedCount: memberCount,
+            status: .confirmed,
+            stage: .confirmed,
+            memberInitials: memberInitials,
+            requiredMemberIndexes: normalizedRequiredIndexes,
+            focusDate: date,
+            candidateStartDate: candidateStartDate,
+            candidateEndDate: candidateEndDate,
+            confirmedDay: "\(day)",
+            confirmedWeekday: weekday
         )
     }
 
