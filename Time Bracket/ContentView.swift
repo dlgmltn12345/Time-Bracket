@@ -18,6 +18,7 @@ struct ContentView: View {
     @State private var selectedMeeting: HomeMeeting? = HomeMeeting.existingMeetings.first
     @State private var recentlyConfirmedMeetingID: String?
     @State private var isCreateMeetingPresented = false
+    @State private var workspaceIdentity = UUID()
 
     private static let referenceDate = makeDate(year: 2026, month: 7, day: 15)
     private static let homeReferenceDate = makeDate(year: 2026, month: 7, day: 11)
@@ -31,7 +32,10 @@ struct ContentView: View {
     var body: some View {
         TabView(selection: $selectedTab) {
             VStack(spacing: 0) {
-                HomeHeader(date: Self.homeReferenceDate)
+                HomeHeader(
+                    date: Self.homeReferenceDate,
+                    onResetPrototype: resetPrototype
+                )
                 HomeView(
                     meetings: meetings,
                     referenceDate: Self.homeReferenceDate,
@@ -57,12 +61,14 @@ struct ContentView: View {
                 expandedCalendarHeight: Self.expandedCalendarHeight,
                 collapsedCalendarHeight: Self.collapsedCalendarHeight,
                 events: Self.events,
+                calendarEventMarkers: confirmedCalendarEventMarkers,
                 meeting: selectedMeeting,
                 calendar: calendar,
                 onShareWithMembers: shareHostAvailability,
                 onCompareResponses: compareCandidateTimes,
                 onConfirmMeeting: confirmMeeting
             )
+            .id(workspaceIdentity)
             .tag(TopTab.calendar)
             .tabItem {
                 Label("캘린더", systemImage: "calendar")
@@ -86,6 +92,18 @@ struct ContentView: View {
         .presentationDragIndicator(.visible)
     }
 
+    private var confirmedCalendarEventMarkers: [CalendarEventMarker] {
+        meetings
+            .filter { $0.status == .confirmed }
+            .map { meeting in
+                CalendarEventMarker(
+                    id: meeting.id,
+                    date: meeting.focusDate,
+                    tint: meeting.iconTint
+                )
+            }
+    }
+
     private static var appCalendar: Calendar {
         var calendar = Calendar.current
         calendar.firstWeekday = 1
@@ -104,6 +122,22 @@ struct ContentView: View {
     private func presentCreateMeeting() {
         recentlyConfirmedMeetingID = nil
         isCreateMeetingPresented = true
+    }
+
+    private func resetPrototype() {
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        isCreateMeetingPresented = false
+
+        withAnimation(.easeInOut(duration: 0.28)) {
+            meetings = HomeMeeting.existingMeetings
+            selectedMeeting = HomeMeeting.existingMeetings.first
+            recentlyConfirmedMeetingID = nil
+            selectedDate = nil
+            displayedMonth = Self.referenceMonth
+            calendarHeight = Self.expandedCalendarHeight
+            workspaceIdentity = UUID()
+            selectedTab = .home
+        }
     }
 
     private func openMeeting(_ meeting: HomeMeeting) {
@@ -269,6 +303,7 @@ private struct MeetingWorkspaceScreen: View {
     let expandedCalendarHeight: CGFloat
     let collapsedCalendarHeight: CGFloat
     let events: [ScheduleEvent]
+    let calendarEventMarkers: [CalendarEventMarker]
     let meeting: HomeMeeting?
     let calendar: Calendar
     let onShareWithMembers: (String, [AvailabilitySlot: AvailabilityEntry]) -> Void
@@ -286,6 +321,7 @@ private struct MeetingWorkspaceScreen: View {
                     expandedCalendarHeight: expandedCalendarHeight,
                     collapsedCalendarHeight: collapsedCalendarHeight,
                     events: events,
+                    calendarEventMarkers: calendarEventMarkers,
                     meeting: meeting,
                     calendar: calendar,
                     onShareWithMembers: onShareWithMembers,
@@ -378,6 +414,7 @@ private struct CalendarScreen: View {
     let expandedCalendarHeight: CGFloat
     let collapsedCalendarHeight: CGFloat
     let events: [ScheduleEvent]
+    let calendarEventMarkers: [CalendarEventMarker]
     let meeting: HomeMeeting
     let calendar: Calendar
     let onShareWithMembers: (String, [AvailabilitySlot: AvailabilityEntry]) -> Void
@@ -440,8 +477,7 @@ private struct CalendarScreen: View {
                                 rangeStartDate: meeting.candidateStartDate,
                                 rangeEndDate: meeting.candidateEndDate,
                                 showsDateRange: !isConfirmedCalendar,
-                                eventDates: isConfirmedCalendar ? [meeting.focusDate] : [],
-                                eventTint: meeting.iconTint,
+                                eventMarkers: calendarEventMarkers,
                                 expansionProgress: expansionProgress,
                                 calendar: calendar
                             )
@@ -1604,8 +1640,8 @@ private struct DerivationCriteria: Equatable {
     static let `default` = DerivationCriteria(
         timePreference: .any,
         avoidsEarlyMorning: false,
-        avoidsAfterLunch: true,
-        avoidsNearLeaving: true,
+        avoidsAfterLunch: false,
+        avoidsNearLeaving: false,
         priority: .allAvailable
     )
 
@@ -1714,6 +1750,7 @@ private struct CalendarDerivationTransitionOverlay: View {
     @State private var isOrbiting = false
     @State private var isPulsing = false
     @State private var isReady = false
+    @State private var isReadyCopyVisible = false
     @State private var circleProgress: CGFloat = 0
     @State private var checkProgress: CGFloat = 0
     @State private var didSendCompletion = false
@@ -1728,41 +1765,42 @@ private struct CalendarDerivationTransitionOverlay: View {
 
             VStack(spacing: 0) {
                 ZStack {
-                    if isReady {
-                        AnimatedConfirmationCheckmark(
-                            circleProgress: circleProgress,
-                            checkProgress: checkProgress,
-                            tint: tint
-                        )
-                        .frame(width: 88, height: 88)
-                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
-                    } else {
-                        analysisIndicator
-                            .transition(.opacity.combined(with: .scale(scale: 0.94)))
-                    }
+                    analysisIndicator
+                        .opacity(isReady ? 0 : 1)
+                        .scaleEffect(isReady ? 0.94 : 1)
+
+                    AnimatedConfirmationCheckmark(
+                        circleProgress: circleProgress,
+                        checkProgress: checkProgress,
+                        tint: tint
+                    )
+                    .frame(width: 88, height: 88)
+                    .opacity(isReady ? 1 : 0)
+                    .scaleEffect(isReady ? 1 : 0.9)
                 }
                 .frame(width: 164, height: 164)
+                .animation(.easeInOut(duration: 0.58), value: isReady)
 
                 ZStack(alignment: .top) {
-                    if isReady {
-                        statusCopy(
-                            title: "후보를 비교할 준비가 됐어요",
-                            detail: "선택한 기준에 따라 가능한 시간을 살펴볼게요."
-                        )
-                        .transition(.opacity.combined(with: .offset(y: 7)))
-                    } else {
-                        statusCopy(
-                            title: "응답을 분석하고 있어요",
-                            detail: "6명의 일정과 선택 기준을 비교하고 있어요."
-                        )
-                        .transition(.opacity.combined(with: .offset(y: -5)))
-                    }
+                    statusCopy(
+                        title: "응답을 분석하고 있어요",
+                        detail: "6명의 일정과 선택 기준을 비교하고 있어요."
+                    )
+                    .opacity(isReadyCopyVisible ? 0 : 1)
+                    .offset(y: isReadyCopyVisible ? -5 : 0)
+
+                    statusCopy(
+                        title: "후보를 비교할 준비가 됐어요",
+                        detail: "선택한 기준에 따라 가능한 시간을 살펴볼게요."
+                    )
+                    .opacity(isReadyCopyVisible ? 1 : 0)
+                    .offset(y: isReadyCopyVisible ? 0 : 7)
                 }
                 .frame(height: 74, alignment: .top)
                 .padding(.top, 28)
+                .animation(.easeInOut(duration: 0.58), value: isReadyCopyVisible)
             }
             .offset(y: -24)
-            .animation(.easeInOut(duration: 0.34), value: isReady)
         }
         .accessibilityElement(children: .combine)
         .onAppear(perform: startAnimation)
@@ -1847,6 +1885,7 @@ private struct CalendarDerivationTransitionOverlay: View {
     private func startAnimation() {
         animationTask?.cancel()
         isReady = false
+        isReadyCopyVisible = false
         circleProgress = 0
         checkProgress = 0
         didSendCompletion = false
@@ -1855,6 +1894,7 @@ private struct CalendarDerivationTransitionOverlay: View {
 
         guard !reduceMotion else {
             isReady = true
+            isReadyCopyVisible = true
             circleProgress = 1
             checkProgress = 1
             completeOnce(after: 0.55)
@@ -1867,28 +1907,35 @@ private struct CalendarDerivationTransitionOverlay: View {
         }
 
         animationTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(2.3))
+            try? await Task.sleep(for: .seconds(2.55))
             guard !Task.isCancelled else { return }
 
-            withAnimation(.easeInOut(duration: 0.3)) {
+            withAnimation(.easeInOut(duration: 0.58)) {
                 isReady = true
             }
 
-            try? await Task.sleep(for: .seconds(0.12))
+            try? await Task.sleep(for: .seconds(0.18))
             guard !Task.isCancelled else { return }
 
-            withAnimation(.easeInOut(duration: 0.52)) {
+            withAnimation(.easeInOut(duration: 0.58)) {
+                isReadyCopyVisible = true
+            }
+
+            try? await Task.sleep(for: .seconds(0.18))
+            guard !Task.isCancelled else { return }
+
+            withAnimation(.easeInOut(duration: 0.62)) {
                 circleProgress = 1
             }
 
-            try? await Task.sleep(for: .seconds(0.24))
+            try? await Task.sleep(for: .seconds(0.34))
             guard !Task.isCancelled else { return }
 
-            withAnimation(.easeOut(duration: 0.4)) {
+            withAnimation(.easeOut(duration: 0.48)) {
                 checkProgress = 1
             }
 
-            try? await Task.sleep(for: .seconds(0.72))
+            try? await Task.sleep(for: .seconds(0.9))
             guard !Task.isCancelled else { return }
             completeOnce()
         }
@@ -2677,6 +2724,7 @@ private struct CalendarHeader: View {
 
 private struct HomeHeader: View {
     let date: Date
+    let onResetPrototype: () -> Void
 
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
@@ -2692,20 +2740,24 @@ private struct HomeHeader: View {
 
             Spacer(minLength: 12)
 
-            Button {
-                print("Open my profile")
-            } label: {
+            Button(action: onResetPrototype) {
                 ProfileAvatar(
                     name: "나",
                     fallback: "나",
                     size: 38,
                     tint: Color(uiColor: .systemIndigo),
-                    borderColor: Color(uiColor: .separator).opacity(0.25),
-                    borderWidth: 0.8
+                    borderColor: .clear,
+                    borderWidth: 0
                 )
+                .padding(2.5)
+                .overlay {
+                    Circle()
+                        .stroke(Color.white.opacity(0.96), lineWidth: 1.5)
+                }
+                .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("내 프로필")
+            .accessibilityLabel("프로토타입 초기화")
         }
         .padding(.horizontal, LayoutMetrics.horizontalPadding)
         .padding(.top, 10)
@@ -2952,7 +3004,7 @@ private struct BracketReviewScreen: View {
         static let eliminationDimHold = 1.16
         static let eliminationDimAnimation = 0.48
         static let eliminationAnimationResponse = 0.78
-        static let recommendationProcessingHold = 2.15
+        static let recommendationProcessingHold = 1.5
     }
 
     private var candidates: [MeetingDecisionCandidate] {
@@ -3137,99 +3189,121 @@ private struct BracketReviewScreen: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            SequentialDerivationTitle(
-                text: phase.onboardingTitle,
-                initialDelay: Timing.titleInitialDelay,
-                characterInterval: Timing.titleCharacterInterval,
-                characterAnimationDuration: Timing.titleCharacterAnimation
-            )
-            .padding(.horizontal, LayoutMetrics.horizontalPadding)
-            .padding(.top, 12)
+        ZStack {
+            ZStack {
+                VStack(alignment: .leading, spacing: 0) {
+                    SequentialDerivationTitle(
+                        text: phase.onboardingTitle,
+                        initialDelay: Timing.titleInitialDelay,
+                        characterInterval: Timing.titleCharacterInterval,
+                        characterAnimationDuration: Timing.titleCharacterAnimation
+                    )
+                    .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                    .padding(.top, 12)
 
-            Text(phase.onboardingDetail)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, LayoutMetrics.horizontalPadding)
-                .padding(.top, 10)
-                .opacity(isDetailVisible ? 1 : 0)
-                .offset(y: isDetailVisible ? 0 : 8)
-                .id(phase.onboardingDetail)
-                .transition(.opacity.combined(with: .offset(y: 6)))
-                .animation(.easeInOut(duration: 0.38), value: isDetailVisible)
+                    Text(phase.onboardingDetail)
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                        .padding(.top, 10)
+                        .opacity(isDetailVisible ? 1 : 0)
+                        .offset(y: isDetailVisible ? 0 : 8)
+                        .id(phase.onboardingDetail)
+                        .transition(.opacity.combined(with: .offset(y: 6)))
+                        .animation(.easeInOut(duration: 0.38), value: isDetailVisible)
 
-            DerivationPhaseChipRow(
-                chips: phaseChips,
-                isVisible: isDetailVisible
-            )
-            .padding(.horizontal, LayoutMetrics.horizontalPadding)
-            .padding(.top, 14)
+                    DerivationPhaseChipRow(
+                        chips: phaseChips,
+                        isVisible: isDetailVisible
+                    )
+                    .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                    .padding(.top, 14)
 
-            if phase == .final && areNonFinalSlotsHidden && isRecommendationReady {
-                FinalCandidateComparisonView(
-                    candidates: finalDerivationCandidates,
-                    selectedCandidateID: $selectedFinalCandidateID,
+                    if phase == .final && areNonFinalSlotsHidden && isRecommendationReady {
+                        FinalCandidateComparisonView(
+                            candidates: finalDerivationCandidates,
+                            selectedCandidateID: $selectedFinalCandidateID,
+                            calendar: calendar,
+                            selectionStageCount: candidateSelectionStages.count,
+                            onShowEliminated: {
+                                withAnimation(processNavigationAnimation) {
+                                    isEliminatedCandidatesPresented = true
+                                }
+                            },
+                            onAdjustCriteria: {
+                                adjustedCriteria = meeting.derivationCriteria
+                                isDerivationCriteriaPresented = true
+                            },
+                            onConfirm: { candidate in
+                                confirmationCandidate = candidate
+                            }
+                        )
+                        .padding(.top, 24)
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .bottom)),
+                            removal: .opacity
+                        ))
+                    } else if !isRecommendationProcessing {
+                        OnboardingResponseBlockStage(
+                            slots: derivationSlots,
+                            revealsBlocks: areResponseBlocksRevealed,
+                            revealInterval: Timing.blockInterval,
+                            revealAnimationResponse: Timing.blockAnimationResponse,
+                            criteria: meeting.derivationCriteria,
+                            dimsCriteriaExcludedSlots: areCriteriaExcludedSlotsDimmed,
+                            dimsUnavailableSlots: areUnavailableSlotsDimmed,
+                            dimsBurdenHeavySlots: areBurdenHeavySlotsDimmed,
+                            dimsLowAvailabilitySlots: areLowAvailabilitySlotsDimmed,
+                            dimsNonFinalSlots: areNonFinalSlotsDimmed,
+                            hidesCriteriaExcludedSlots: areCriteriaExcludedSlotsHidden,
+                            hidesUnavailableSlots: areUnavailableSlotsHidden,
+                            hidesBurdenHeavySlots: areBurdenHeavySlotsHidden,
+                            hidesLowAvailabilitySlots: areLowAvailabilitySlotsHidden,
+                            hidesNonFinalSlots: areNonFinalSlotsHidden,
+                            burdenExclusionThreshold: burdenExclusionThreshold,
+                            minimumPreferredAvailableCount: minimumPreferredAvailableCount,
+                            finalSlotIDs: finalDerivationSlotIDs,
+                            calendar: calendar
+                        )
+                        .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                        .padding(.top, 26)
+                        .transition(.opacity)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .opacity(isRecommendationProcessing ? 0 : 1)
+
+                if isRecommendationProcessing {
+                    RecommendationProcessingView()
+                        .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                        .transition(.opacity)
+                }
+            }
+            .offset(x: isEliminatedCandidatesPresented ? -34 : 0)
+            .opacity(isEliminatedCandidatesPresented ? 0.9 : 1)
+
+            if isEliminatedCandidatesPresented {
+                CandidateSelectionProcessView(
+                    stages: candidateSelectionStages,
+                    responseSummaries: responseSummaries,
+                    initialCandidateCount: derivationSlots.count,
                     calendar: calendar,
-                    selectionStageCount: candidateSelectionStages.count,
-                    onShowEliminated: {
-                        isEliminatedCandidatesPresented = true
-                    },
-                    onAdjustCriteria: {
-                        adjustedCriteria = meeting.derivationCriteria
-                        isDerivationCriteriaPresented = true
-                    },
-                    onConfirm: { candidate in
-                        confirmationCandidate = candidate
+                    onDismiss: {
+                        withAnimation(processNavigationAnimation) {
+                            isEliminatedCandidatesPresented = false
+                        }
                     }
                 )
-                .padding(.top, 24)
-                .transition(.asymmetric(
-                    insertion: .opacity.combined(with: .move(edge: .bottom)),
-                    removal: .opacity
-                ))
-            } else if phase == .final && areNonFinalSlotsHidden {
-                RecommendationProcessingView()
-                    .padding(.horizontal, LayoutMetrics.horizontalPadding)
-                    .padding(.top, 46)
-                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
-            } else {
-                OnboardingResponseBlockStage(
-                    slots: derivationSlots,
-                    revealsBlocks: areResponseBlocksRevealed,
-                    revealInterval: Timing.blockInterval,
-                    revealAnimationResponse: Timing.blockAnimationResponse,
-                    criteria: meeting.derivationCriteria,
-                    dimsCriteriaExcludedSlots: areCriteriaExcludedSlotsDimmed,
-                    dimsUnavailableSlots: areUnavailableSlotsDimmed,
-                    dimsBurdenHeavySlots: areBurdenHeavySlotsDimmed,
-                    dimsLowAvailabilitySlots: areLowAvailabilitySlotsDimmed,
-                    dimsNonFinalSlots: areNonFinalSlotsDimmed,
-                    hidesCriteriaExcludedSlots: areCriteriaExcludedSlotsHidden,
-                    hidesUnavailableSlots: areUnavailableSlotsHidden,
-                    hidesBurdenHeavySlots: areBurdenHeavySlotsHidden,
-                    hidesLowAvailabilitySlots: areLowAvailabilitySlotsHidden,
-                    hidesNonFinalSlots: areNonFinalSlotsHidden,
-                    burdenExclusionThreshold: burdenExclusionThreshold,
-                    minimumPreferredAvailableCount: minimumPreferredAvailableCount,
-                    finalSlotIDs: finalDerivationSlotIDs,
-                    calendar: calendar
-                )
-                .padding(.horizontal, LayoutMetrics.horizontalPadding)
-                .padding(.top, 26)
-                .transition(.opacity)
+                .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
+                .transition(.move(edge: .trailing))
+                .zIndex(20)
             }
-
-            Spacer(minLength: 0)
         }
+        .animation(.easeInOut(duration: 0.4), value: isRecommendationProcessing)
+        .animation(processNavigationAnimation, value: isEliminatedCandidatesPresented)
         .background(Color(uiColor: .systemBackground))
-        .fullScreenCover(isPresented: $isEliminatedCandidatesPresented) {
-            CandidateSelectionProcessView(
-                stages: candidateSelectionStages,
-                responseSummaries: responseSummaries,
-                initialCandidateCount: derivationSlots.count,
-                calendar: calendar
-            )
-        }
         .fullScreenCover(item: $confirmationCandidate) { candidate in
             MeetingConfirmationSuccessView(
                 meeting: meeting,
@@ -3272,6 +3346,14 @@ private struct BracketReviewScreen: View {
             phaseAnimationTask?.cancel()
         }
         .toolbar(.hidden, for: .tabBar)
+    }
+
+    private var processNavigationAnimation: Animation {
+        .interactiveSpring(response: 0.44, dampingFraction: 0.92, blendDuration: 0.08)
+    }
+
+    private var isRecommendationProcessing: Bool {
+        phase == .final && areNonFinalSlotsHidden && !isRecommendationReady
     }
 
     private func removedSlots(
@@ -3930,7 +4012,7 @@ private enum MeetingDerivationPhase: Int {
         case .burden:
             return "부담이 큰 시간을 줄일게요"
         case .availability:
-            return "참석 가능성이 높은 시간을 남길게요"
+            return "참석하기 좋은 시간을 남길게요"
         case .final:
             return "추천 시간대를 보여줄게요"
         }
@@ -4069,29 +4151,24 @@ private struct DerivationPhaseChipView: View {
 
 private struct RecommendationProcessingView: View {
     var body: some View {
-        VStack(spacing: 14) {
-            ZStack {
-                Circle()
-                    .fill(Color(uiColor: .systemBlue).opacity(0.08))
+        VStack(spacing: 0) {
+            ProgressView()
+                .controlSize(.regular)
+                .tint(Color(uiColor: .systemBlue))
 
-                ProgressView()
-                    .controlSize(.regular)
-                    .tint(Color(uiColor: .systemBlue))
-            }
-            .frame(width: 52, height: 52)
-
-            Text("응답을 정리하고 있어요")
-                .font(.system(size: 14, weight: .semibold))
+            Text("추천안을 정리하고 있어요")
+                .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(.primary)
+                .padding(.top, 18)
 
-            Text("남은 후보의 참석 가능성과 부담 사유를 비교합니다.")
-                .font(.system(size: 13, weight: .medium))
+            Text("남은 후보를 비교해 가장 안정적인 시간을 찾고 있어요.")
+                .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 8)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 30)
         .accessibilityElement(children: .combine)
     }
 }
@@ -6308,8 +6385,8 @@ private struct CandidateSelectionProcessView: View {
     let responseSummaries: [AvailabilitySlot: TeamResponseSummary]
     let initialCandidateCount: Int
     let calendar: Calendar
+    let onDismiss: () -> Void
 
-    @Environment(\.dismiss) private var dismiss
     @State private var selectedStageID: CandidateSelectionStage.ID?
 
     private var finalCandidateCount: Int {
@@ -6354,9 +6431,7 @@ private struct CandidateSelectionProcessView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        dismiss()
-                    } label: {
+                    Button(action: onDismiss) {
                         Image(systemName: "chevron.left")
                     }
                     .accessibilityLabel("추천안으로 돌아가기")
@@ -12649,13 +12724,13 @@ private struct MeetingInfoCalendarRow: View {
             } label: {
                 HStack(spacing: 6) {
                     Text(selectedSection)
-                        .font(.system(size: 17, weight: .regular))
-                        .foregroundStyle(.primary)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Color(uiColor: .systemBlue))
                         .lineLimit(1)
 
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color(uiColor: .systemBlue))
                 }
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .contentShape(Rectangle())
@@ -13163,9 +13238,7 @@ private struct HomeView: View {
                 if let priorityConfirmedMeeting {
                     HomeConfirmedMeetingTile(
                         meeting: priorityConfirmedMeeting,
-                        eyebrowTitle: isShowingRecentlyConfirmedMeeting
-                            ? "방금 확정한 회의"
-                            : "다가오는 회의",
+                        isNewlyConfirmed: priorityConfirmedMeeting.id == recentlyConfirmedMeetingID,
                         onSelect: { onSelectMeeting(priorityConfirmedMeeting) }
                     )
                     .id(priorityConfirmedMeeting.id)
@@ -13175,6 +13248,7 @@ private struct HomeView: View {
                 if !otherConfirmedMeetings.isEmpty {
                     HomeScheduledMeetingListTile(
                         meetings: otherConfirmedMeetings,
+                        newlyConfirmedMeetingID: recentlyConfirmedMeetingID,
                         onSelectMeeting: onSelectMeeting
                     )
                 }
@@ -13211,16 +13285,7 @@ private struct HomeView: View {
     }
 
     private var priorityConfirmedMeeting: HomeMeeting? {
-        recentlyConfirmedMeeting ?? upcomingConfirmedMeetings.first
-    }
-
-    private var recentlyConfirmedMeeting: HomeMeeting? {
-        guard let recentlyConfirmedMeetingID else { return nil }
-        return confirmedMeetings.first { $0.id == recentlyConfirmedMeetingID }
-    }
-
-    private var isShowingRecentlyConfirmedMeeting: Bool {
-        priorityConfirmedMeeting?.id == recentlyConfirmedMeeting?.id
+        upcomingConfirmedMeetings.first
     }
 
     private var otherConfirmedMeetings: [HomeMeeting] {
@@ -13865,20 +13930,20 @@ private struct HomeNextActionTile: View {
 
 private struct HomeConfirmedMeetingTile: View {
     let meeting: HomeMeeting
-    var eyebrowTitle = "다가오는 회의"
+    var isNewlyConfirmed = false
     let onSelect: () -> Void
 
     var body: some View {
         Button(action: onSelect) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
-                    Label(eyebrowTitle, systemImage: "checkmark.seal.fill")
+                    Label("다가오는 회의", systemImage: "checkmark.seal.fill")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color(uiColor: .systemGreen))
 
                     Spacer(minLength: 8)
 
-                    Text("확정")
+                    Text(isNewlyConfirmed ? "새로 확정" : "확정")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Color(uiColor: .systemGreen))
                         .padding(.horizontal, 9)
@@ -14024,12 +14089,13 @@ private struct HomePendingResponseRow: View {
 
 private struct HomeScheduledMeetingListTile: View {
     let meetings: [HomeMeeting]
+    let newlyConfirmedMeetingID: String?
     let onSelectMeeting: (HomeMeeting) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("이번 주 회의")
+                Text("이후 일정")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(.primary)
 
@@ -14067,10 +14133,26 @@ private struct HomeScheduledMeetingListTile: View {
                             .clipShape(Capsule())
 
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(meeting.title)
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
+                            HStack(spacing: 6) {
+                                Text(meeting.title)
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+
+                                if meeting.id == newlyConfirmedMeetingID {
+                                    Text("새로 확정")
+                                        .font(.system(size: 9, weight: .semibold))
+                                        .foregroundStyle(Color(uiColor: .systemGreen))
+                                        .padding(.horizontal, 6)
+                                        .frame(height: 18)
+                                        .background(
+                                            Color(uiColor: .systemGreen).opacity(0.1),
+                                            in: Capsule()
+                                        )
+                                        .fixedSize()
+                                        .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                                }
+                            }
 
                             Text("\(meeting.timeRange) · \(meeting.homePlaceText)")
                                 .font(.system(size: 11, weight: .medium))
@@ -14893,8 +14975,7 @@ private struct ExpandableCalendarView: View {
     let rangeStartDate: Date
     let rangeEndDate: Date
     let showsDateRange: Bool
-    let eventDates: [Date]
-    let eventTint: Color
+    let eventMarkers: [CalendarEventMarker]
     let expansionProgress: CGFloat
     let calendar: Calendar
 
@@ -14906,8 +14987,7 @@ private struct ExpandableCalendarView: View {
                 rangeStartDate: rangeStartDate,
                 rangeEndDate: rangeEndDate,
                 showsDateRange: showsDateRange,
-                eventDates: eventDates,
-                eventTint: eventTint,
+                eventMarkers: eventMarkers,
                 calendar: calendar
             )
             .opacity(expansionProgress)
@@ -14920,8 +15000,7 @@ private struct ExpandableCalendarView: View {
                 rangeStartDate: rangeStartDate,
                 rangeEndDate: rangeEndDate,
                 showsDateRange: showsDateRange,
-                eventDates: eventDates,
-                eventTint: eventTint,
+                eventMarkers: eventMarkers,
                 calendar: calendar
             )
             .opacity(1 - expansionProgress)
@@ -14940,8 +15019,7 @@ private struct MonthCalendarView: View {
     let rangeStartDate: Date
     let rangeEndDate: Date
     let showsDateRange: Bool
-    let eventDates: [Date]
-    let eventTint: Color
+    let eventMarkers: [CalendarEventMarker]
     let calendar: Calendar
 
     var body: some View {
@@ -14967,8 +15045,7 @@ private struct MonthCalendarView: View {
                             isWeekEnd: isWeekEnd(day.date),
                             continuesFromPreviousWeek: continuesFromPreviousWeek(day.date),
                             continuesToNextWeek: continuesToNextWeek(day.date),
-                            hasEvent: hasEvent(on: day.date),
-                            eventTint: eventTint,
+                            eventTints: eventTints(on: day.date),
                             calendar: calendar
                         )
                     }
@@ -15055,8 +15132,10 @@ private struct MonthCalendarView: View {
         return normalizedDate >= normalizedRangeStartDate && normalizedDate <= normalizedRangeEndDate
     }
 
-    private func hasEvent(on date: Date) -> Bool {
-        eventDates.contains { calendar.isDate($0, inSameDayAs: date) }
+    private func eventTints(on date: Date) -> [Color] {
+        eventMarkers.compactMap { marker in
+            calendar.isDate(marker.date, inSameDayAs: date) ? marker.tint : nil
+        }
     }
 
     private func isWeekStart(_ date: Date) -> Bool {
@@ -15093,8 +15172,7 @@ private struct WeekStripView: View {
     let rangeStartDate: Date
     let rangeEndDate: Date
     let showsDateRange: Bool
-    let eventDates: [Date]
-    let eventTint: Color
+    let eventMarkers: [CalendarEventMarker]
     let calendar: Calendar
 
     var body: some View {
@@ -15120,8 +15198,7 @@ private struct WeekStripView: View {
                             isWeekEnd: isWeekEnd(date),
                             continuesFromPreviousWeek: continuesFromPreviousWeek(date),
                             continuesToNextWeek: continuesToNextWeek(date),
-                            hasEvent: hasEvent(on: date),
-                            eventTint: eventTint,
+                            eventTints: eventTints(on: date),
                             calendar: calendar
                         )
                     }
@@ -15193,8 +15270,10 @@ private struct WeekStripView: View {
         return normalizedDate >= normalizedRangeStartDate && normalizedDate <= normalizedRangeEndDate
     }
 
-    private func hasEvent(on date: Date) -> Bool {
-        eventDates.contains { calendar.isDate($0, inSameDayAs: date) }
+    private func eventTints(on date: Date) -> [Color] {
+        eventMarkers.compactMap { marker in
+            calendar.isDate(marker.date, inSameDayAs: date) ? marker.tint : nil
+        }
     }
 
     private func isWeekStart(_ date: Date) -> Bool {
@@ -15237,8 +15316,7 @@ private struct CalendarDayCell: View {
     let isWeekEnd: Bool
     let continuesFromPreviousWeek: Bool
     let continuesToNextWeek: Bool
-    let hasEvent: Bool
-    let eventTint: Color
+    let eventTints: [Color]
     let calendar: Calendar
 
     var body: some View {
@@ -15251,11 +15329,15 @@ private struct CalendarDayCell: View {
                 .foregroundStyle(foregroundStyle)
                 .background(endpointBackground, in: Circle())
 
-            if hasEvent {
-                Circle()
-                    .fill(isEmphasized ? Color.white : eventTint)
-                    .frame(width: 4, height: 4)
-                    .offset(y: 14)
+            if !eventTints.isEmpty {
+                HStack(spacing: 2) {
+                    ForEach(Array(eventTints.prefix(3).enumerated()), id: \.offset) { _, tint in
+                        Circle()
+                            .fill(isEmphasized ? Color.white : tint)
+                            .frame(width: 4, height: 4)
+                    }
+                }
+                .offset(y: 14)
             }
         }
             .frame(maxWidth: .infinity)
@@ -17337,6 +17419,12 @@ private struct ScheduleEvent: Identifiable {
     let date: Date
     let startHour: Int
     let endHour: Int
+}
+
+private struct CalendarEventMarker: Identifiable {
+    let id: String
+    let date: Date
+    let tint: Color
 }
 
 struct ContentView_Previews: PreviewProvider {
