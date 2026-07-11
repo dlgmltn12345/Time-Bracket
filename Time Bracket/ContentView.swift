@@ -14,11 +14,13 @@ struct ContentView: View {
     @State private var displayedMonth = Self.referenceMonth
     @State private var selectedTab: TopTab = .home
     @State private var calendarHeight = Self.expandedCalendarHeight
-    @State private var meetings: [HomeMeeting] = []
-    @State private var selectedMeeting: HomeMeeting?
+    @State private var meetings: [HomeMeeting] = HomeMeeting.existingMeetings
+    @State private var selectedMeeting: HomeMeeting? = HomeMeeting.existingMeetings.first
+    @State private var recentlyConfirmedMeetingID: String?
     @State private var isCreateMeetingPresented = false
 
     private static let referenceDate = makeDate(year: 2026, month: 7, day: 15)
+    private static let homeReferenceDate = makeDate(year: 2026, month: 7, day: 11)
     private static let referenceMonth = makeDate(year: 2026, month: 7, day: 1)
     private static let expandedCalendarHeight: CGFloat = 306
     private static let collapsedCalendarHeight: CGFloat = 86
@@ -29,14 +31,17 @@ struct ContentView: View {
     var body: some View {
         TabView(selection: $selectedTab) {
             VStack(spacing: 0) {
-                CalendarHeader(title: "홈")
+                HomeHeader(date: Self.homeReferenceDate)
                 HomeView(
                     meetings: meetings,
-                    selectedMeeting: selectedMeeting,
+                    referenceDate: Self.homeReferenceDate,
+                    selectedMeetingID: selectedMeeting?.id,
+                    recentlyConfirmedMeetingID: recentlyConfirmedMeetingID,
                     onCreateMeeting: presentCreateMeeting,
                     onSelectMeeting: openMeeting
                 )
             }
+            .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
             .sheet(isPresented: $isCreateMeetingPresented) {
                 createMeetingSheet
             }
@@ -97,6 +102,7 @@ struct ContentView: View {
     }
 
     private func presentCreateMeeting() {
+        recentlyConfirmedMeetingID = nil
         isCreateMeetingPresented = true
     }
 
@@ -156,6 +162,7 @@ struct ContentView: View {
         )
         meetings[meetingIndex] = updatedMeeting
         selectedMeeting = updatedMeeting
+        recentlyConfirmedMeetingID = updatedMeeting.id
         selectedDate = calendar.startOfDay(for: candidate.slot.date)
 
         if let monthStart = calendar.dateInterval(of: .month, for: candidate.slot.date)?.start {
@@ -572,7 +579,9 @@ private struct CalendarScreen: View {
             .offset(y: isDerivationTransitionActive ? 28 : 0)
 
             if isDerivationTransitionActive {
-                CalendarDerivationTransitionOverlay()
+                CalendarDerivationTransitionOverlay {
+                    onCompareResponses(meeting.id, derivationCriteria)
+                }
                     .transition(.opacity.animation(.easeInOut(duration: 0.22)))
                     .zIndex(10)
             }
@@ -825,12 +834,9 @@ private struct CalendarScreen: View {
             return
         }
 
+        derivationCriteria = criteria
         withAnimation(.spring(response: 0.52, dampingFraction: 0.9, blendDuration: 0.06)) {
             isDerivationTransitionActive = true
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.82) {
-            onCompareResponses(meeting.id, criteria)
         }
     }
 
@@ -1701,28 +1707,207 @@ private enum DerivationDecisionPriority: String, CaseIterable, Identifiable {
 }
 
 private struct CalendarDerivationTransitionOverlay: View {
+    let onComplete: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    @State private var isOrbiting = false
+    @State private var isPulsing = false
+    @State private var isReady = false
+    @State private var circleProgress: CGFloat = 0
+    @State private var checkProgress: CGFloat = 0
+    @State private var didSendCompletion = false
+    @State private var animationTask: Task<Void, Never>?
+
+    private let tint = Color(uiColor: .systemBlue)
+
     var body: some View {
         ZStack {
             Color(uiColor: .systemBackground)
                 .ignoresSafeArea()
 
-            VStack(spacing: 12) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(Color(uiColor: .systemBlue))
-                    .frame(width: 48, height: 48)
-                    .background(Color(uiColor: .systemBlue).opacity(0.1), in: Circle())
+            VStack(spacing: 0) {
+                ZStack {
+                    if isReady {
+                        AnimatedConfirmationCheckmark(
+                            circleProgress: circleProgress,
+                            checkProgress: checkProgress,
+                            tint: tint
+                        )
+                        .frame(width: 88, height: 88)
+                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    } else {
+                        analysisIndicator
+                            .transition(.opacity.combined(with: .scale(scale: 0.94)))
+                    }
+                }
+                .frame(width: 164, height: 164)
 
-                Text("회의 시간을 준비하고 있어요")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.primary)
-
-                Text("응답 블럭을 정리하는 중")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
+                ZStack(alignment: .top) {
+                    if isReady {
+                        statusCopy(
+                            title: "후보를 비교할 준비가 됐어요",
+                            detail: "선택한 기준에 따라 가능한 시간을 살펴볼게요."
+                        )
+                        .transition(.opacity.combined(with: .offset(y: 7)))
+                    } else {
+                        statusCopy(
+                            title: "응답을 분석하고 있어요",
+                            detail: "6명의 일정과 선택 기준을 비교하고 있어요."
+                        )
+                        .transition(.opacity.combined(with: .offset(y: -5)))
+                    }
+                }
+                .frame(height: 74, alignment: .top)
+                .padding(.top, 28)
             }
-            .offset(y: -18)
+            .offset(y: -24)
+            .animation(.easeInOut(duration: 0.34), value: isReady)
         }
+        .accessibilityElement(children: .combine)
+        .onAppear(perform: startAnimation)
+        .onDisappear {
+            animationTask?.cancel()
+        }
+    }
+
+    private var analysisIndicator: some View {
+        ZStack {
+            Circle()
+                .stroke(tint.opacity(0.055), lineWidth: 1)
+                .frame(width: 156, height: 156)
+
+            Circle()
+                .stroke(tint.opacity(0.09), lineWidth: 5)
+                .frame(width: 126, height: 126)
+                .scaleEffect(isPulsing ? 1.035 : 0.965)
+                .opacity(isPulsing ? 0.72 : 1)
+                .animation(
+                    .easeInOut(duration: 1.05).repeatForever(autoreverses: true),
+                    value: isPulsing
+                )
+
+            Circle()
+                .trim(from: 0.04, to: 0.28)
+                .stroke(
+                    tint,
+                    style: StrokeStyle(lineWidth: 5, lineCap: .round)
+                )
+                .frame(width: 126, height: 126)
+                .rotationEffect(.degrees(isOrbiting ? 360 : 0))
+                .animation(
+                    .linear(duration: 1.28).repeatForever(autoreverses: false),
+                    value: isOrbiting
+                )
+
+            Circle()
+                .fill(tint)
+                .frame(width: 72, height: 72)
+
+            PhaseAnimator([0, 1, 2, 3]) { phase in
+                HStack(alignment: .bottom, spacing: 4) {
+                    ForEach(0..<3, id: \.self) { index in
+                        RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                            .fill(Color.white)
+                            .frame(width: 6, height: barHeight(index: index, phase: phase))
+                    }
+                }
+                .frame(height: 28, alignment: .bottom)
+            } animation: { _ in
+                .easeInOut(duration: 0.34)
+            }
+        }
+    }
+
+    private func statusCopy(title: String, detail: String) -> some View {
+        VStack(spacing: 8) {
+            Text(title)
+                .font(.system(size: 23, weight: .semibold))
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.center)
+
+            Text(detail)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func barHeight(index: Int, phase: Int) -> CGFloat {
+        let heights: [[CGFloat]] = [
+            [7, 20, 11],
+            [12, 8, 23],
+            [20, 13, 7],
+            [8, 22, 16]
+        ]
+        return heights[phase % heights.count][index]
+    }
+
+    private func startAnimation() {
+        animationTask?.cancel()
+        isReady = false
+        circleProgress = 0
+        checkProgress = 0
+        didSendCompletion = false
+        isOrbiting = false
+        isPulsing = false
+
+        guard !reduceMotion else {
+            isReady = true
+            circleProgress = 1
+            checkProgress = 1
+            completeOnce(after: 0.55)
+            return
+        }
+
+        DispatchQueue.main.async {
+            isOrbiting = true
+            isPulsing = true
+        }
+
+        animationTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2.3))
+            guard !Task.isCancelled else { return }
+
+            withAnimation(.easeInOut(duration: 0.3)) {
+                isReady = true
+            }
+
+            try? await Task.sleep(for: .seconds(0.12))
+            guard !Task.isCancelled else { return }
+
+            withAnimation(.easeInOut(duration: 0.52)) {
+                circleProgress = 1
+            }
+
+            try? await Task.sleep(for: .seconds(0.24))
+            guard !Task.isCancelled else { return }
+
+            withAnimation(.easeOut(duration: 0.4)) {
+                checkProgress = 1
+            }
+
+            try? await Task.sleep(for: .seconds(0.72))
+            guard !Task.isCancelled else { return }
+            completeOnce()
+        }
+    }
+
+    private func completeOnce(after delay: Double = 0) {
+        guard !didSendCompletion else { return }
+
+        if delay > 0 {
+            animationTask = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled else { return }
+                completeOnce()
+            }
+            return
+        }
+
+        didSendCompletion = true
+        onComplete()
     }
 }
 
@@ -2453,6 +2638,7 @@ private enum AvailabilityMode: String, CaseIterable, Identifiable {
 
 private struct CalendarHeader: View {
     let title: String
+    var backgroundColor: Color = Color(uiColor: .systemBackground)
 
     var body: some View {
         HStack {
@@ -2478,7 +2664,7 @@ private struct CalendarHeader: View {
         .padding(.horizontal, LayoutMetrics.horizontalPadding)
         .padding(.top, 12)
         .padding(.bottom, 12)
-        .background(Color(uiColor: .systemBackground))
+        .background(backgroundColor)
     }
 
     private var headerTitle: some View {
@@ -2486,6 +2672,52 @@ private struct CalendarHeader: View {
             .font(.system(size: 28, weight: .semibold))
             .foregroundStyle(.primary)
             .lineLimit(1)
+    }
+}
+
+private struct HomeHeader: View {
+    let date: Date
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(dateText)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+
+                Text("회의 조율")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(.primary)
+            }
+
+            Spacer(minLength: 12)
+
+            Button {
+                print("Open my profile")
+            } label: {
+                ProfileAvatar(
+                    name: "나",
+                    fallback: "나",
+                    size: 38,
+                    tint: Color(uiColor: .systemIndigo),
+                    borderColor: Color(uiColor: .separator).opacity(0.25),
+                    borderWidth: 0.8
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("내 프로필")
+        }
+        .padding(.horizontal, LayoutMetrics.horizontalPadding)
+        .padding(.top, 10)
+        .padding(.bottom, 14)
+        .background(Color(uiColor: .systemGroupedBackground))
+    }
+
+    private var dateText: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ko_KR")
+        formatter.dateFormat = "M월 d일 EEEE"
+        return formatter.string(from: date)
     }
 }
 
@@ -12909,65 +13141,49 @@ private enum TeamCategory: String, CaseIterable, Identifiable {
 
 private struct HomeView: View {
     let meetings: [HomeMeeting]
-    let selectedMeeting: HomeMeeting?
+    let referenceDate: Date
+    let selectedMeetingID: String?
+    let recentlyConfirmedMeetingID: String?
     let onCreateMeeting: () -> Void
     let onSelectMeeting: (HomeMeeting) -> Void
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            Grid(horizontalSpacing: HomeGridMetrics.gap, verticalSpacing: HomeGridMetrics.gap) {
-                HomeCreateMeetingTile(onCreate: onCreateMeeting)
-                    .gridCellColumns(2)
+            VStack(spacing: HomeGridMetrics.gap) {
+                HomeQuickCreateRow(onCreate: onCreateMeeting)
 
-                GridRow {
-                    HomeCountTile(
-                        title: "조율 중",
-                        value: activeMeetings.count,
-                        detail: activeCountDetail,
-                        symbolName: "calendar.badge.clock",
-                        tint: Color(uiColor: .systemBlue)
-                    )
-
-                    HomeCountTile(
-                        title: "확정",
-                        value: confirmedMeetings.count,
-                        detail: confirmedCountDetail,
-                        symbolName: "checkmark.seal.fill",
-                        tint: Color(uiColor: .systemGreen)
-                    )
-                }
-
-                Group {
-                    if let activeMeeting = priorityActiveMeeting {
-                        HomeNextActionTile(
-                            meeting: activeMeeting,
-                            onSelect: { onSelectMeeting(activeMeeting) }
-                        )
-                    } else if let confirmedMeeting = priorityConfirmedMeeting {
-                        HomeConfirmedMeetingTile(
-                            meeting: confirmedMeeting,
-                            onSelect: { onSelectMeeting(confirmedMeeting) }
-                        )
-                    } else {
-                        HomeWeekEmptyTile()
-                    }
-                }
-                .id(primaryTileID)
-                .gridCellColumns(2)
-                .transition(.opacity.combined(with: .scale(scale: 0.985)))
-
-                GridRow {
-                    HomeRecentTeamTile()
-                    HomeDefaultHoursTile()
-                }
-
-                if secondaryActiveMeetings.count > 0 {
+                if !userCreatedActiveMeetings.isEmpty {
                     HomeActiveMeetingListTile(
-                        meetings: secondaryActiveMeetings,
-                        selectedMeetingID: selectedMeeting?.id,
+                        meetings: userCreatedActiveMeetings,
+                        selectedMeetingID: selectedMeetingID,
                         onSelectMeeting: onSelectMeeting
                     )
-                    .gridCellColumns(2)
+                }
+
+                if let priorityConfirmedMeeting {
+                    HomeConfirmedMeetingTile(
+                        meeting: priorityConfirmedMeeting,
+                        eyebrowTitle: isShowingRecentlyConfirmedMeeting
+                            ? "방금 확정한 회의"
+                            : "다가오는 회의",
+                        onSelect: { onSelectMeeting(priorityConfirmedMeeting) }
+                    )
+                    .id(priorityConfirmedMeeting.id)
+                    .transition(.opacity.combined(with: .scale(scale: 0.985)))
+                }
+
+                if !otherConfirmedMeetings.isEmpty {
+                    HomeScheduledMeetingListTile(
+                        meetings: otherConfirmedMeetings,
+                        onSelectMeeting: onSelectMeeting
+                    )
+                }
+
+                if let pendingInvitation {
+                    HomeResponseRequestCard(
+                        meeting: pendingInvitation,
+                        onSelect: { onSelectMeeting(pendingInvitation) }
+                    )
                 }
             }
             .padding(.horizontal, LayoutMetrics.horizontalPadding)
@@ -12975,68 +13191,98 @@ private struct HomeView: View {
             .padding(.bottom, 96)
             .animation(.spring(response: 0.42, dampingFraction: 0.9), value: homeStateKey)
         }
-        .background(Color(uiColor: .systemBackground))
+        .background(Color(uiColor: .systemGroupedBackground))
     }
 
-    private var activeMeetings: [HomeMeeting] {
-        meetings.filter { $0.status != .confirmed }
+    private var invitedMeetings: [HomeMeeting] {
+        meetings.filter { $0.isInvitation && $0.stage == .hostAvailability }
+    }
+
+    private var userCreatedActiveMeetings: [HomeMeeting] {
+        meetings.filter {
+            $0.status != .confirmed && !$0.isInvitation && !$0.isPrototypeSeed
+        }
     }
 
     private var confirmedMeetings: [HomeMeeting] {
-        meetings.filter { $0.status == .confirmed }
-    }
-
-    private var priorityActiveMeeting: HomeMeeting? {
-        if let selectedMeeting, selectedMeeting.status != .confirmed {
-            return selectedMeeting
-        }
-
-        return activeMeetings.first
+        meetings
+            .filter { $0.status == .confirmed }
+            .sorted { meetingStartDate(for: $0) < meetingStartDate(for: $1) }
     }
 
     private var priorityConfirmedMeeting: HomeMeeting? {
-        if let selectedMeeting, selectedMeeting.status == .confirmed {
-            return selectedMeeting
-        }
-
-        return confirmedMeetings.first
+        recentlyConfirmedMeeting ?? upcomingConfirmedMeetings.first
     }
 
-    private var secondaryActiveMeetings: [HomeMeeting] {
-        guard let priorityActiveMeeting else {
-            return activeMeetings
-        }
-
-        return activeMeetings.filter { $0.id != priorityActiveMeeting.id }
+    private var recentlyConfirmedMeeting: HomeMeeting? {
+        guard let recentlyConfirmedMeetingID else { return nil }
+        return confirmedMeetings.first { $0.id == recentlyConfirmedMeetingID }
     }
 
-    private var activeCountDetail: String {
-        guard !activeMeetings.isEmpty else {
-            return "진행 없음"
-        }
-
-        let inputCount = activeMeetings.filter { $0.status == .waiting }.count
-        return inputCount > 0 ? "입력 필요 \(inputCount)" : "응답 확인"
+    private var isShowingRecentlyConfirmedMeeting: Bool {
+        priorityConfirmedMeeting?.id == recentlyConfirmedMeeting?.id
     }
 
-    private var confirmedCountDetail: String {
-        confirmedMeetings.isEmpty ? "예정 없음" : "캘린더 반영"
+    private var otherConfirmedMeetings: [HomeMeeting] {
+        guard let priorityConfirmedMeeting else {
+            return []
+        }
+
+        return upcomingConfirmedMeetings.filter { meeting in
+            meeting.id != priorityConfirmedMeeting.id && isInHomeScheduleWindow(meeting.focusDate)
+        }
     }
 
-    private var primaryTileID: String {
-        if let priorityActiveMeeting {
-            return "active-\(priorityActiveMeeting.id)-\(priorityActiveMeeting.status.title)"
-        }
+    private var pendingInvitation: HomeMeeting? {
+        invitedMeetings.first
+    }
 
-        if let priorityConfirmedMeeting {
-            return "confirmed-\(priorityConfirmedMeeting.id)"
+    private var upcomingConfirmedMeetings: [HomeMeeting] {
+        let referenceDay = homeCalendar.startOfDay(for: referenceDate)
+        return confirmedMeetings.filter {
+            homeCalendar.startOfDay(for: $0.focusDate) >= referenceDay
         }
-
-        return "empty-home"
     }
 
     private var homeStateKey: String {
-        meetings.map { "\($0.id)-\($0.status.title)-\($0.respondedCount)" }.joined(separator: "|")
+        let meetingState = meetings
+            .map { "\($0.id)-\($0.status.title)-\($0.respondedCount)" }
+            .joined(separator: "|")
+        return "\(meetingState)|recent:\(recentlyConfirmedMeetingID ?? "none")"
+    }
+
+    private var homeCalendar: Calendar {
+        var calendar = Calendar.current
+        calendar.locale = Locale(identifier: "ko_KR")
+        calendar.firstWeekday = 1
+        return calendar
+    }
+
+    private func meetingStartDate(for meeting: HomeMeeting) -> Date {
+        let startTime = meeting.timeRange
+            .components(separatedBy: "-")
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let components = startTime.split(separator: ":")
+        let hour = components.first.flatMap { Int($0) } ?? 0
+        let minute = components.dropFirst().first.flatMap { Int($0) } ?? 0
+
+        return homeCalendar.date(
+            bySettingHour: hour,
+            minute: minute,
+            second: 0,
+            of: meeting.focusDate
+        ) ?? meeting.focusDate
+    }
+
+    private func isInHomeScheduleWindow(_ date: Date) -> Bool {
+        let startDate = homeCalendar.startOfDay(for: referenceDate)
+        guard let endDate = homeCalendar.date(byAdding: .day, value: 7, to: startDate) else {
+            return false
+        }
+
+        let meetingDate = homeCalendar.startOfDay(for: date)
+        return meetingDate >= startDate && meetingDate < endDate
     }
 }
 
@@ -13044,14 +13290,446 @@ private enum HomeGridMetrics {
     static let gap: CGFloat = 12
     static let cornerRadius: CGFloat = 20
     static let cardPadding: CGFloat = 16
-    static let createHeight: CGFloat = 82
-    static let countHeight: CGFloat = 132
-    static let featureHeight: CGFloat = 198
-    static let compactHeight: CGFloat = 152
+    static let primaryHeight: CGFloat = 218
+    static let featureHeight: CGFloat = 218
+    static let confirmedHeight: CGFloat = 176
+    static let commandHeight: CGFloat = 66
+    static let pendingHeight: CGFloat = 72
+    static let responseRequestHeight: CGFloat = 94
+    static let topBentoHeight: CGFloat = 244
+    static let compactStatusHeight: CGFloat = 116
+    static let weekStripHeight: CGFloat = 112
+    static let bottomBentoHeight: CGFloat = 136
     static let topPadding: CGFloat = 8
 
     static var cardShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+    }
+}
+
+private struct HomePriorityTaskCard: View {
+    let meeting: HomeMeeting
+    let isRecentlyConfirmed: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(stateTitle)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(tint)
+
+                Text(stateValue)
+                    .font(.system(size: 33, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .padding(.top, 8)
+
+                Text(stateCaption)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 1)
+
+                Spacer(minLength: 12)
+
+                Text(meeting.title)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 6) {
+                    Text(actionTitle)
+                        .font(.system(size: 14, weight: .semibold))
+
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 12, weight: .bold))
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 42)
+                .background(Color(uiColor: .label), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                .padding(.top, 14)
+            }
+            .padding(HomeGridMetrics.cardPadding)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background {
+                HomeGridMetrics.cardShape
+                    .fill(Color(uiColor: .systemBackground))
+                    .overlay(HomeGridMetrics.cardShape.fill(tint.opacity(0.09)))
+            }
+            .contentShape(HomeGridMetrics.cardShape)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var tint: Color {
+        if isRecentlyConfirmed { return Color(uiColor: .systemGreen) }
+
+        switch meeting.stage {
+        case .hostAvailability:
+            return Color(uiColor: .systemOrange)
+        case .collectingResponses:
+            return Color(uiColor: .systemIndigo)
+        case .bracketReview:
+            return Color(uiColor: .systemPurple)
+        case .confirmed:
+            return Color(uiColor: .systemGreen)
+        }
+    }
+
+    private var stateTitle: String {
+        if isRecentlyConfirmed { return "회의 확정" }
+
+        switch meeting.stage {
+        case .hostAvailability:
+            return meeting.isInvitation ? "내 입력 필요" : "내 시간 입력"
+        case .collectingResponses:
+            return "응답 수집 중"
+        case .bracketReview:
+            return "도출 준비 완료"
+        case .confirmed:
+            return "다가오는 회의"
+        }
+    }
+
+    private var stateValue: String {
+        if isRecentlyConfirmed || meeting.stage == .confirmed {
+            let startTime = meeting.timeRange.components(separatedBy: " - ").first ?? meeting.timeRange
+            return "\(meeting.confirmedWeekday) \(startTime)"
+        }
+
+        switch meeting.stage {
+        case .hostAvailability:
+            return "D-1"
+        case .collectingResponses, .bracketReview:
+            return "\(meeting.respondedCount)/\(meeting.memberCount)"
+        case .confirmed:
+            return meeting.timeRange
+        }
+    }
+
+    private var stateCaption: String {
+        if isRecentlyConfirmed { return "일정이 캘린더에 반영됐어요" }
+
+        switch meeting.stage {
+        case .hostAvailability:
+            return "응답 마감까지"
+        case .collectingResponses:
+            return "팀원 응답"
+        case .bracketReview:
+            return "모든 응답 완료"
+        case .confirmed:
+            return meeting.dateRange
+        }
+    }
+
+    private var actionTitle: String {
+        if isRecentlyConfirmed { return "일정 확인" }
+
+        switch meeting.stage {
+        case .hostAvailability:
+            return "시간 입력"
+        case .collectingResponses:
+            return "응답 확인"
+        case .bracketReview:
+            return "회의 도출"
+        case .confirmed:
+            return "일정 확인"
+        }
+    }
+}
+
+private struct HomePriorityCreateCard: View {
+    let onCreate: () -> Void
+
+    var body: some View {
+        Button(action: onCreate) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("새 회의")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color(uiColor: .systemBlue))
+
+                Image(systemName: "calendar.badge.plus")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(Color(uiColor: .systemBlue))
+                    .padding(.top, 14)
+
+                Spacer(minLength: 12)
+
+                Text("새 회의 조율")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                Text("후보 기간과 참석자를 설정하세요")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .padding(.top, 3)
+            }
+            .padding(HomeGridMetrics.cardPadding)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Color(uiColor: .systemBackground), in: HomeGridMetrics.cardShape)
+            .contentShape(HomeGridMetrics.cardShape)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct HomeNextConfirmedCompactCard: View {
+    let meeting: HomeMeeting?
+    let expandsVertically: Bool
+    let onSelect: (() -> Void)?
+
+    var body: some View {
+        Button {
+            onSelect?()
+        } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("다음 확정")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color(uiColor: .systemGreen))
+
+                if let meeting {
+                    let startTime = meeting.timeRange.components(separatedBy: " - ").first ?? meeting.timeRange
+
+                    Text("\(meeting.confirmedWeekday) \(startTime)")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.68)
+                        .padding(.top, 7)
+
+                    Text(meeting.title)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(expandsVertically ? 2 : 1)
+                        .padding(.top, 3)
+                } else {
+                    Text("일정 없음")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .padding(.top, 8)
+                }
+
+                if expandsVertically {
+                    Spacer(minLength: 8)
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Color(uiColor: .tertiaryLabel))
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background {
+                HomeGridMetrics.cardShape
+                    .fill(Color(uiColor: .systemBackground))
+                    .overlay(HomeGridMetrics.cardShape.fill(Color(uiColor: .systemGreen).opacity(0.08)))
+            }
+            .contentShape(HomeGridMetrics.cardShape)
+        }
+        .buttonStyle(.plain)
+        .disabled(onSelect == nil)
+    }
+}
+
+private struct HomeResponseWaitingCompactCard: View {
+    let meeting: HomeMeeting
+
+    var body: some View {
+        Button {
+            print("Remind members for \(meeting.title)")
+        } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("응답 대기")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color(uiColor: .systemIndigo))
+
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Text("\(meeting.remainingCount)")
+                        .font(.system(size: 27, weight: .semibold))
+                        .monospacedDigit()
+
+                    Text("명")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color(uiColor: .systemIndigo))
+                }
+                .foregroundStyle(.primary)
+                .padding(.top, 6)
+
+                Spacer(minLength: 4)
+
+                Label("다시 요청", systemImage: "arrow.clockwise")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color(uiColor: .systemIndigo))
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background {
+                HomeGridMetrics.cardShape
+                    .fill(Color(uiColor: .systemBackground))
+                    .overlay(HomeGridMetrics.cardShape.fill(Color(uiColor: .systemIndigo).opacity(0.08)))
+            }
+            .contentShape(HomeGridMetrics.cardShape)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct HomeWeekStripCard: View {
+    let meetings: [HomeMeeting]
+    private let weekdays = ["월", "화", "수", "목", "금"]
+    private let days = [13, 14, 15, 16, 17]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("이번 주")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                Spacer(minLength: 8)
+
+                Text("확정 · 조율 일정")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color(uiColor: .tertiaryLabel))
+            }
+
+            HStack(spacing: 0) {
+                ForEach(days.indices, id: \.self) { index in
+                    VStack(spacing: 5) {
+                        Text(weekdays[index])
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+
+                        Text("\(days[index])")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .monospacedDigit()
+
+                        HStack(spacing: 3) {
+                            ForEach(Array(colors(for: days[index]).prefix(2).enumerated()), id: \.offset) { _, color in
+                                Circle()
+                                    .fill(color)
+                                    .frame(width: 5, height: 5)
+                            }
+                        }
+                        .frame(height: 5)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+        }
+        .padding(HomeGridMetrics.cardPadding)
+        .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.weekStripHeight, maxHeight: HomeGridMetrics.weekStripHeight, alignment: .topLeading)
+        .background(Color(uiColor: .systemBackground), in: HomeGridMetrics.cardShape)
+    }
+
+    private func colors(for day: Int) -> [Color] {
+        let confirmedColors = meetings.compactMap { meeting -> Color? in
+            guard meeting.status == .confirmed,
+                  Calendar.current.component(.day, from: meeting.focusDate) == day else {
+                return nil
+            }
+            return meeting.iconTint
+        }
+
+        if !confirmedColors.isEmpty {
+            return confirmedColors
+        }
+
+        let hasCoordination = meetings.contains { meeting in
+            guard meeting.status != .confirmed else { return false }
+            let startDay = Calendar.current.component(.day, from: meeting.candidateStartDate)
+            let endDay = Calendar.current.component(.day, from: meeting.candidateEndDate)
+            return (startDay...endDay).contains(day)
+        }
+
+        return hasCoordination ? [Color(uiColor: .systemOrange)] : []
+    }
+}
+
+private struct HomeCoordinationOverviewCard: View {
+    let meetings: [HomeMeeting]
+    let onSelect: (() -> Void)?
+
+    var body: some View {
+        Button {
+            onSelect?()
+        } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("조율 중")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Text("\(meetings.count)")
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .monospacedDigit()
+
+                    Text("건")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.top, 10)
+
+                Spacer(minLength: 8)
+
+                Text(summaryText)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+            }
+            .padding(HomeGridMetrics.cardPadding)
+            .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.bottomBentoHeight, maxHeight: HomeGridMetrics.bottomBentoHeight, alignment: .topLeading)
+            .background(Color(uiColor: .systemBackground), in: HomeGridMetrics.cardShape)
+            .contentShape(HomeGridMetrics.cardShape)
+        }
+        .buttonStyle(.plain)
+        .disabled(onSelect == nil)
+    }
+
+    private var summaryText: String {
+        guard !meetings.isEmpty else { return "진행 중인 조율 없음" }
+        return meetings.prefix(2).map(\.shortHomeTitle).joined(separator: " · ")
+    }
+}
+
+private struct HomeCompactCreateCard: View {
+    let onCreate: () -> Void
+
+    var body: some View {
+        Button(action: onCreate) {
+            VStack(alignment: .leading, spacing: 0) {
+                Image(systemName: "plus")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(Color(uiColor: .systemBlue))
+                    .frame(width: 36, height: 36)
+                    .background(Color(uiColor: .systemBlue).opacity(0.1), in: Circle())
+
+                Spacer(minLength: 10)
+
+                Text("새 회의 조율")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                Text("후보 기간부터 설정")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 3)
+            }
+            .padding(HomeGridMetrics.cardPadding)
+            .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.bottomBentoHeight, maxHeight: HomeGridMetrics.bottomBentoHeight, alignment: .topLeading)
+            .background(Color(uiColor: .systemBackground), in: HomeGridMetrics.cardShape)
+            .contentShape(HomeGridMetrics.cardShape)
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -13060,82 +13738,53 @@ private struct HomeCreateMeetingTile: View {
 
     var body: some View {
         Button(action: onCreate) {
-            HStack(spacing: 13) {
-                Image(systemName: "plus")
-                    .font(.system(size: 17, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 38, height: 38)
-                    .background(Color(uiColor: .systemBlue), in: Circle())
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text("새 조율")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color(uiColor: .systemBlue))
+                        .padding(.horizontal, 10)
+                        .frame(height: 27)
+                        .background(Color(uiColor: .systemBlue).opacity(0.1), in: Capsule())
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("새 회의 조율")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.primary)
+                    Spacer(minLength: 8)
 
-                    Text("일정 · 시간 · 참석자 설정")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    Image(systemName: "calendar.badge.plus")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Color(uiColor: .systemBlue))
                 }
 
-                Spacer(minLength: 8)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("모두가 가능한 시간을 찾아보세요")
+                        .font(.system(size: 21, weight: .semibold))
+                        .foregroundStyle(.primary)
 
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(Color(uiColor: .tertiaryLabel))
+                    Text("후보 기간과 참석자를 정하면 팀원들의 응답을 한곳에서 비교할 수 있어요.")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, 16)
+
+                Spacer(minLength: 14)
+
+                Text("새 회의 만들기")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 46)
+                    .background(Color(uiColor: .label), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
             }
-            .padding(.horizontal, HomeGridMetrics.cardPadding)
-            .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.createHeight, maxHeight: HomeGridMetrics.createHeight)
-            .background(Color(uiColor: .secondarySystemBackground), in: HomeGridMetrics.cardShape)
+            .padding(HomeGridMetrics.cardPadding)
+            .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.primaryHeight, maxHeight: HomeGridMetrics.primaryHeight, alignment: .leading)
+            .background(Color(uiColor: .systemBackground), in: HomeGridMetrics.cardShape)
             .contentShape(HomeGridMetrics.cardShape)
         }
         .buttonStyle(.plain)
     }
 }
 
-private struct HomeCountTile: View {
-    let title: String
-    let value: Int
-    let detail: String
-    let symbolName: String
-    let tint: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Image(systemName: symbolName)
-                    .font(.system(size: 15, weight: .semibold))
-                    .symbolRenderingMode(.monochrome)
-                    .foregroundStyle(tint)
-                    .frame(width: 30, height: 30)
-                    .background(tint.opacity(0.11), in: Circle())
-
-                Spacer(minLength: 0)
-
-                Text("\(value)")
-                    .font(.system(size: 27, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .monospacedDigit()
-                    .contentTransition(.numericText())
-            }
-
-            Spacer(minLength: 8)
-
-            Text(title)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.primary)
-
-            Text(detail)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .padding(.top, 2)
-        }
-        .padding(HomeGridMetrics.cardPadding)
-        .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.countHeight, maxHeight: HomeGridMetrics.countHeight, alignment: .leading)
-        .background(Color(uiColor: .secondarySystemBackground), in: HomeGridMetrics.cardShape)
-    }
-}
 
 private struct HomeNextActionTile: View {
     let meeting: HomeMeeting
@@ -13143,27 +13792,21 @@ private struct HomeNextActionTile: View {
 
     var body: some View {
         Button(action: onSelect) {
-            VStack(alignment: .leading, spacing: 15) {
-                HStack(alignment: .center, spacing: 10) {
-                    Image(systemName: meeting.iconName)
-                        .font(.system(size: 16, weight: .semibold))
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text(meeting.homeActionTitle)
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(meeting.iconTint)
-                        .frame(width: 38, height: 38)
-                        .background(meeting.iconTint.opacity(0.12), in: Circle())
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("다음 할 일")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.secondary)
-
-                        Text(meeting.homeActionTitle)
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(meeting.iconTint)
-                    }
+                        .padding(.horizontal, 10)
+                        .frame(height: 27)
+                        .background(meeting.iconTint.opacity(0.1), in: Capsule())
 
                     Spacer(minLength: 8)
 
-                    StatusPill(status: meeting.status)
+                    Text("\(meeting.respondedCount)/\(meeting.memberCount) 응답")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
                 }
 
                 VStack(alignment: .leading, spacing: 5) {
@@ -13172,41 +13815,38 @@ private struct HomeNextActionTile: View {
                         .foregroundStyle(.primary)
                         .lineLimit(1)
 
-                    Text(meeting.homeActionDetail)
+                    Text("\(meeting.dateRange) · 1시간 · \(meeting.memberCount)명")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(1)
                 }
+                .padding(.top, 14)
 
-                Spacer(minLength: 0)
+                Spacer(minLength: 12)
 
                 HStack(spacing: 10) {
-                    Label(meeting.dateRange, systemImage: "calendar")
+                    ProgressView(value: responseProgress)
+                        .tint(meeting.iconTint)
+
+                    Text("\(Int(responseProgress * 100))%")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
-
-                    Spacer(minLength: 4)
-
-                    AvatarStack(
-                        names: meeting.memberInitials,
-                        maxVisible: 3,
-                        size: 27,
-                        borderColor: Color(uiColor: .secondarySystemBackground),
-                        borderWidth: 2,
-                        overlap: 8
-                    )
-
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(Color(uiColor: .tertiaryLabel))
+                        .monospacedDigit()
                 }
+
+                Text(meeting.homeActionTitle)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 46)
+                    .background(Color(uiColor: .label), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    .padding(.top, 14)
             }
             .padding(HomeGridMetrics.cardPadding)
-            .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.featureHeight, maxHeight: HomeGridMetrics.featureHeight, alignment: .topLeading)
+            .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.featureHeight, alignment: .topLeading)
             .background {
                 HomeGridMetrics.cardShape
-                    .fill(Color(uiColor: .secondarySystemBackground))
+                    .fill(Color(uiColor: .systemBackground))
                     .overlay {
                         HomeGridMetrics.cardShape
                             .fill(meeting.iconTint.opacity(0.035))
@@ -13216,17 +13856,23 @@ private struct HomeNextActionTile: View {
         }
         .buttonStyle(.plain)
     }
+
+    private var responseProgress: Double {
+        guard meeting.memberCount > 0 else { return 0 }
+        return min(max(Double(meeting.respondedCount) / Double(meeting.memberCount), 0), 1)
+    }
 }
 
 private struct HomeConfirmedMeetingTile: View {
     let meeting: HomeMeeting
+    var eyebrowTitle = "다가오는 회의"
     let onSelect: () -> Void
 
     var body: some View {
         Button(action: onSelect) {
-            VStack(alignment: .leading, spacing: 15) {
+            VStack(alignment: .leading, spacing: 0) {
                 HStack {
-                    Label("다가오는 회의", systemImage: "checkmark.seal.fill")
+                    Label(eyebrowTitle, systemImage: "checkmark.seal.fill")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color(uiColor: .systemGreen))
 
@@ -13240,41 +13886,33 @@ private struct HomeConfirmedMeetingTile: View {
                         .background(Color(uiColor: .systemGreen).opacity(0.11), in: Capsule())
                 }
 
-                HStack(alignment: .center, spacing: 14) {
-                    HomeDateTile(meeting: meeting)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(meeting.title)
+                        .font(.system(size: 21, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
 
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack(spacing: 7) {
-                            Image(systemName: meeting.iconName)
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(meeting.iconTint)
+                    Text("\(homeDateText) · \(meeting.timeRange)")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .monospacedDigit()
+                        .lineLimit(1)
 
-                            Text(meeting.title)
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                        }
-
-                        Text(meeting.timeRange)
-                            .font(.system(size: 15, weight: .semibold))
-                            .monospacedDigit()
-                            .foregroundStyle(.primary)
-
-                        Label(meeting.homePlaceText, systemImage: "location.fill")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
+                    Label(meeting.homePlaceText, systemImage: "location.fill")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
+                .padding(.top, 15)
 
-                Spacer(minLength: 0)
+                Spacer(minLength: 12)
 
                 HStack {
                     AvatarStack(
                         names: meeting.memberInitials,
                         maxVisible: 4,
                         size: 28,
-                        borderColor: Color(uiColor: .secondarySystemBackground),
+                        borderColor: Color(uiColor: .systemBackground),
                         borderWidth: 2,
                         overlap: 8
                     )
@@ -13291,175 +13929,226 @@ private struct HomeConfirmedMeetingTile: View {
                 }
             }
             .padding(HomeGridMetrics.cardPadding)
-            .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.featureHeight, maxHeight: HomeGridMetrics.featureHeight, alignment: .topLeading)
-            .background {
-                HomeGridMetrics.cardShape
-                    .fill(Color(uiColor: .secondarySystemBackground))
-                    .overlay {
-                        HomeGridMetrics.cardShape
-                            .fill(meeting.iconTint.opacity(0.035))
-                    }
+            .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.confirmedHeight, alignment: .topLeading)
+            .background(Color(uiColor: .systemBackground), in: HomeGridMetrics.cardShape)
+            .contentShape(HomeGridMetrics.cardShape)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var homeDateText: String {
+        "\(Calendar.current.component(.month, from: meeting.focusDate))월 \(meeting.confirmedDay)일 \(meeting.confirmedWeekday)요일"
+    }
+}
+
+private struct HomeQuickCreateRow: View {
+    let onCreate: () -> Void
+
+    var body: some View {
+        Button(action: onCreate) {
+            HStack(spacing: 12) {
+                Image(systemName: "plus")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(Color(uiColor: .systemBlue))
+                    .frame(width: 34, height: 34)
+                    .background(Color(uiColor: .systemBlue).opacity(0.1), in: Circle())
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("새 회의 조율")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.primary)
+
+                    Text("후보 기간과 참석자 설정")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 8)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Color(uiColor: .tertiaryLabel))
             }
+            .padding(.horizontal, HomeGridMetrics.cardPadding)
+            .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.commandHeight, maxHeight: HomeGridMetrics.commandHeight)
+            .background(Color(uiColor: .systemBackground), in: HomeGridMetrics.cardShape)
             .contentShape(HomeGridMetrics.cardShape)
         }
         .buttonStyle(.plain)
     }
 }
 
-private struct HomeDateTile: View {
+private struct HomePendingResponseRow: View {
     let meeting: HomeMeeting
 
     var body: some View {
-        VStack(spacing: 2) {
-            Text(homeMonthText)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(meeting.iconTint)
+        HStack(spacing: 12) {
+            AvatarStack(
+                names: pendingNames,
+                maxVisible: 2,
+                size: 30,
+                borderColor: Color(uiColor: .systemBackground),
+                borderWidth: 2,
+                overlap: 8
+            )
 
-            Text(meeting.confirmedDay)
-                .font(.system(size: 27, weight: .semibold))
-                .foregroundStyle(.primary)
-                .monospacedDigit()
+            VStack(alignment: .leading, spacing: 2) {
+                Text("응답 대기 \(meeting.remainingCount)명")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.primary)
 
-            Text("\(meeting.confirmedWeekday)요일")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
+                Text("아직 시간을 입력하지 않았어요")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            Button("다시 요청") {
+                print("Remind pending members")
+            }
+            .font(.system(size: 13, weight: .semibold))
+            .buttonStyle(.plain)
+            .foregroundStyle(Color(uiColor: .systemBlue))
         }
-        .frame(width: 68, height: 82)
-        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.horizontal, HomeGridMetrics.cardPadding)
+        .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.pendingHeight, maxHeight: HomeGridMetrics.pendingHeight)
+        .background(Color(uiColor: .systemBackground), in: HomeGridMetrics.cardShape)
     }
 
-    private var homeMonthText: String {
-        "\(Calendar.current.component(.month, from: meeting.focusDate))월"
+    private var pendingNames: [String] {
+        let count = min(meeting.remainingCount, meeting.memberInitials.count)
+        return Array(meeting.memberInitials.suffix(count))
     }
 }
 
-private struct HomeWeekEmptyTile: View {
-    private let weekdays = ["월", "화", "수", "목", "금"]
-    private let days = [13, 14, 15, 16, 17]
+private struct HomeScheduledMeetingListTile: View {
+    let meetings: [HomeMeeting]
+    let onSelectMeeting: (HomeMeeting) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 15) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("이번 주")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.primary)
+                Text("이번 주 회의")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.primary)
 
-                    Text("예정된 회의가 없습니다")
-                        .font(.system(size: 13, weight: .medium))
+                Spacer(minLength: 8)
+
+                Text("\(meetings.count)건")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .padding(.bottom, 8)
+
+            Divider()
+
+            ForEach(Array(meetings.enumerated()), id: \.element.id) { index, meeting in
+                Button {
+                    onSelectMeeting(meeting)
+                } label: {
+                    HStack(spacing: 12) {
+                        VStack(spacing: 1) {
+                            Text(meeting.confirmedWeekday)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+
+                            Text(meeting.confirmedDay)
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(.primary)
+                                .monospacedDigit()
+                        }
+                        .frame(width: 34)
+
+                        Rectangle()
+                            .fill(meeting.iconTint)
+                            .frame(width: 3, height: 34)
+                            .clipShape(Capsule())
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(meeting.title)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+
+                            Text("\(meeting.timeRange) · \(meeting.homePlaceText)")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+
+                        Spacer(minLength: 8)
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(Color(uiColor: .tertiaryLabel))
+                    }
+                    .frame(height: 62)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                if index < meetings.count - 1 {
+                    Divider()
+                        .padding(.leading, 49)
+                }
+            }
+        }
+        .padding(HomeGridMetrics.cardPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .systemBackground), in: HomeGridMetrics.cardShape)
+    }
+}
+
+private struct HomeResponseRequestCard: View {
+    let meeting: HomeMeeting
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 12) {
+                Image(systemName: "person.crop.circle.badge.clock")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color(uiColor: .systemOrange))
+                    .frame(width: 38, height: 38)
+                    .background(Color(uiColor: .systemOrange).opacity(0.11), in: Circle())
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("내 응답 필요")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color(uiColor: .systemOrange))
+
+                    Text(meeting.title)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    Text("\(meeting.dateRange) · \(meeting.respondedCount)/\(meeting.memberCount) 응답")
+                        .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .lineLimit(1)
                 }
 
                 Spacer(minLength: 8)
 
-                Image(systemName: "calendar")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Color(uiColor: .systemBlue))
-                    .frame(width: 34, height: 34)
-                    .background(Color(uiColor: .systemBlue).opacity(0.1), in: Circle())
-            }
+                HStack(spacing: 5) {
+                    Text("시간 입력")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color(uiColor: .systemBlue))
 
-            Spacer(minLength: 0)
-
-            HStack(spacing: 0) {
-                ForEach(days.indices, id: \.self) { index in
-                    VStack(spacing: 7) {
-                        Text(weekdays[index])
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.secondary)
-
-                        Text("\(days[index])")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(index == 2 ? Color.white : Color.primary)
-                            .frame(width: 32, height: 32)
-                            .background(index == 2 ? Color(uiColor: .label) : Color.clear, in: Circle())
-                    }
-                    .frame(maxWidth: .infinity)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Color(uiColor: .tertiaryLabel))
                 }
             }
+            .padding(.horizontal, HomeGridMetrics.cardPadding)
+            .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.responseRequestHeight, maxHeight: HomeGridMetrics.responseRequestHeight)
+            .background(Color(uiColor: .systemBackground), in: HomeGridMetrics.cardShape)
+            .contentShape(HomeGridMetrics.cardShape)
         }
-        .padding(HomeGridMetrics.cardPadding)
-        .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.featureHeight, maxHeight: HomeGridMetrics.featureHeight, alignment: .topLeading)
-        .background(Color(uiColor: .secondarySystemBackground), in: HomeGridMetrics.cardShape)
-    }
-}
-
-private struct HomeRecentTeamTile: View {
-    private let names = ["김민준", "이서연", "오유진", "송승아", "박도윤"]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Image(systemName: "person.3.fill")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Color(uiColor: .systemPurple))
-                .frame(width: 30, height: 30)
-                .background(Color(uiColor: .systemPurple).opacity(0.11), in: Circle())
-
-            Spacer(minLength: 8)
-
-            Text("최근 팀")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
-
-            Text("디자인팀")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(.primary)
-                .padding(.top, 2)
-
-            HStack {
-                AvatarStack(
-                    names: names,
-                    maxVisible: 3,
-                    size: 25,
-                    borderColor: Color(uiColor: .secondarySystemBackground),
-                    borderWidth: 2,
-                    overlap: 8
-                )
-
-                Spacer(minLength: 4)
-
-                Text("5명")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.top, 9)
-        }
-        .padding(HomeGridMetrics.cardPadding)
-        .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.compactHeight, maxHeight: HomeGridMetrics.compactHeight, alignment: .leading)
-        .background(Color(uiColor: .secondarySystemBackground), in: HomeGridMetrics.cardShape)
-    }
-}
-
-private struct HomeDefaultHoursTile: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Image(systemName: "clock.fill")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Color(uiColor: .systemIndigo))
-                .frame(width: 30, height: 30)
-                .background(Color(uiColor: .systemIndigo).opacity(0.11), in: Circle())
-
-            Spacer(minLength: 8)
-
-            Text("기본 시간")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
-
-            Text("09–18")
-                .font(.system(size: 22, weight: .semibold))
-                .monospacedDigit()
-                .foregroundStyle(.primary)
-                .padding(.top, 2)
-
-            Label("점심시간 제외", systemImage: "fork.knife")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .padding(.top, 9)
-        }
-        .padding(HomeGridMetrics.cardPadding)
-        .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.compactHeight, maxHeight: HomeGridMetrics.compactHeight, alignment: .leading)
-        .background(Color(uiColor: .secondarySystemBackground), in: HomeGridMetrics.cardShape)
+        .buttonStyle(.plain)
     }
 }
 
@@ -13471,13 +14160,13 @@ private struct HomeActiveMeetingListTile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("다른 조율")
+                Text("진행 중인 조율")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(.primary)
 
                 Spacer(minLength: 8)
 
-                Text("\(meetings.count)")
+                Text("\(meetings.count)건")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
@@ -13517,7 +14206,7 @@ private struct HomeActiveMeetingListTile: View {
                 }
                 .buttonStyle(.plain)
                 .background(
-                    meeting.id == selectedMeetingID ? Color(uiColor: .systemBackground).opacity(0.7) : Color.clear,
+                    meeting.id == selectedMeetingID ? Color(uiColor: .secondarySystemBackground) : Color.clear,
                     in: RoundedRectangle(cornerRadius: 12, style: .continuous)
                 )
 
@@ -13529,7 +14218,7 @@ private struct HomeActiveMeetingListTile: View {
         }
         .padding(HomeGridMetrics.cardPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(uiColor: .secondarySystemBackground), in: HomeGridMetrics.cardShape)
+        .background(Color(uiColor: .systemBackground), in: HomeGridMetrics.cardShape)
     }
 }
 
@@ -13772,6 +14461,20 @@ private struct HomeMeeting: Identifiable {
         max(memberCount - respondedCount, 0)
     }
 
+    var isInvitation: Bool {
+        id.hasPrefix("invited-")
+    }
+
+    var isPrototypeSeed: Bool {
+        id.hasPrefix("existing-") || id.hasPrefix("hosted-") || id.hasPrefix("invited-")
+    }
+
+    var shortHomeTitle: String {
+        if title.contains("신규 기능") { return "스펙 리뷰" }
+        if title.contains("킥오프") { return "킥오프 회의" }
+        return title
+    }
+
     var responseProgress: Double {
         guard memberCount > 0 else {
             return 0
@@ -13890,6 +14593,124 @@ private struct HomeMeeting: Identifiable {
     func isRequiredMember(at index: Int) -> Bool {
         normalizedRequiredIndexes.contains(index)
     }
+
+    static let existingMeetings = [
+        HomeMeeting(
+            id: "existing-brand-system-review",
+            title: "브랜드 시스템 리뷰",
+            sectionName: "디자인팀",
+            iconName: "paintpalette.fill",
+            subtitle: "디자인팀 · 컴포넌트 가이드 점검 · 오프라인 · 디자인팀 회의실",
+            dateRange: "7월 15일",
+            timeRange: "11:00 - 12:00",
+            excludedTimeRule: .none,
+            derivationCriteria: .default,
+            hostAvailabilityEntries: [:],
+            memberCount: 5,
+            respondedCount: 5,
+            status: .confirmed,
+            stage: .confirmed,
+            memberInitials: ["나", "이서연", "오유진", "송승아", "한유나"],
+            requiredMemberIndexes: [0, 1, 2, 3],
+            focusDate: Self.makeDate(year: 2026, month: 7, day: 15),
+            candidateStartDate: Self.makeDate(year: 2026, month: 7, day: 15),
+            candidateEndDate: Self.makeDate(year: 2026, month: 7, day: 15),
+            confirmedDay: "15",
+            confirmedWeekday: "수"
+        ),
+        HomeMeeting(
+            id: "existing-product-sprint-review",
+            title: "제품 스프린트 리뷰",
+            sectionName: "제품팀",
+            iconName: "checklist",
+            subtitle: "제품팀 · 다음 스프린트 범위 점검 · 오프라인 · 프로젝트룸 A",
+            dateRange: "7월 16일",
+            timeRange: "15:00 - 16:00",
+            excludedTimeRule: .none,
+            derivationCriteria: .default,
+            hostAvailabilityEntries: [:],
+            memberCount: 6,
+            respondedCount: 6,
+            status: .confirmed,
+            stage: .confirmed,
+            memberInitials: ["나", "김민준", "문준호", "박도윤", "최하린", "윤재현"],
+            requiredMemberIndexes: [0, 1, 2, 3],
+            focusDate: Self.makeDate(year: 2026, month: 7, day: 16),
+            candidateStartDate: Self.makeDate(year: 2026, month: 7, day: 16),
+            candidateEndDate: Self.makeDate(year: 2026, month: 7, day: 16),
+            confirmedDay: "16",
+            confirmedWeekday: "목"
+        ),
+        HomeMeeting(
+            id: "existing-interview-share",
+            title: "사용자 인터뷰 공유",
+            sectionName: "리서치",
+            iconName: "bubble.left.and.bubble.right.fill",
+            subtitle: "리서치 · 핵심 인사이트 공유 · 온라인",
+            dateRange: "7월 17일",
+            timeRange: "10:00 - 11:00",
+            excludedTimeRule: .none,
+            derivationCriteria: .default,
+            hostAvailabilityEntries: [:],
+            memberCount: 4,
+            respondedCount: 4,
+            status: .confirmed,
+            stage: .confirmed,
+            memberInitials: ["나", "정지우", "임다혜", "김민준"],
+            requiredMemberIndexes: [0, 1, 2],
+            focusDate: Self.makeDate(year: 2026, month: 7, day: 17),
+            candidateStartDate: Self.makeDate(year: 2026, month: 7, day: 17),
+            candidateEndDate: Self.makeDate(year: 2026, month: 7, day: 17),
+            confirmedDay: "17",
+            confirmedWeekday: "금"
+        ),
+        HomeMeeting(
+            id: "hosted-quarterly-kickoff",
+            title: "3분기 킥오프 회의",
+            sectionName: "제품팀",
+            iconName: "flag.fill",
+            subtitle: "제품팀 · 3분기 목표와 역할 정리 · 오프라인 · 타운홀 B",
+            dateRange: "7월 14일 - 18일",
+            timeRange: "09:00 - 18:00",
+            excludedTimeRule: .lunch,
+            derivationCriteria: .default,
+            hostAvailabilityEntries: [:],
+            memberCount: 6,
+            respondedCount: 4,
+            status: .collecting,
+            stage: .collectingResponses,
+            memberInitials: ["나", "김민준", "이서연", "박도윤", "정지우", "임다혜"],
+            requiredMemberIndexes: [0, 1, 2, 3],
+            focusDate: Self.makeDate(year: 2026, month: 7, day: 14),
+            candidateStartDate: Self.makeDate(year: 2026, month: 7, day: 14),
+            candidateEndDate: Self.makeDate(year: 2026, month: 7, day: 18),
+            confirmedDay: "14",
+            confirmedWeekday: "화"
+        ),
+        HomeMeeting(
+            id: "invited-feature-spec-review",
+            title: "신규 기능 스펙 리뷰",
+            sectionName: "제품팀",
+            iconName: "checklist",
+            subtitle: "제품팀 · 신규 기능 범위 검토 · 오프라인 · 프로젝트룸 B",
+            dateRange: "7월 21일 - 25일",
+            timeRange: "09:00 - 18:00",
+            excludedTimeRule: .lunch,
+            derivationCriteria: .default,
+            hostAvailabilityEntries: [:],
+            memberCount: 6,
+            respondedCount: 2,
+            status: .waiting,
+            stage: .hostAvailability,
+            memberInitials: ["나", "김민준", "문준호", "박도윤", "정지우", "임다혜"],
+            requiredMemberIndexes: [0, 1, 2, 3],
+            focusDate: Self.makeDate(year: 2026, month: 7, day: 21),
+            candidateStartDate: Self.makeDate(year: 2026, month: 7, day: 21),
+            candidateEndDate: Self.makeDate(year: 2026, month: 7, day: 25),
+            confirmedDay: "21",
+            confirmedWeekday: "화"
+        )
+    ]
 
     static let sampleData = [
         HomeMeeting(
