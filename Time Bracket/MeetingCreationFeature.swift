@@ -3078,7 +3078,9 @@ struct ParticipantPickerSheet: View {
         }
 
         withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
-            selectedMembers.append(contentsOf: newMembers.map(MeetingMemberDraft.init(member:)))
+            for member in newMembers {
+                selectedMembers.append(MeetingMemberDraft(member: member))
+            }
         }
     }
 
