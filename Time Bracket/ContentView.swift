@@ -1201,6 +1201,8 @@ private struct DerivationCriteriaSheet: View {
     let onCancel: () -> Void
     let onStart: () -> Void
 
+    @State private var isPriorityHelpPresented = false
+
     var body: some View {
         NavigationStack {
             ScrollView(.vertical, showsIndicators: false) {
@@ -1264,43 +1266,15 @@ private struct DerivationCriteriaSheet: View {
 
                     criteriaCard(
                         title: "추천 방식",
-                        detail: "회의 성격에 맞춰 추천 순서를 조정합니다."
+                        detail: "회의 성격에 맞춰 추천 순서를 조정합니다.",
+                        showsPriorityHelp: true
                     ) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Picker("추천 방식", selection: $criteria.priority) {
-                                ForEach(DerivationDecisionPriority.allCases) { priority in
-                                    Text(priority.title).tag(priority)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-
-                            Text(criteria.priority.detail)
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-
-                            Divider()
-                                .padding(.top, 2)
-
-                            HStack(alignment: .top, spacing: 9) {
-                                Image(systemName: "info.circle.fill")
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .symbolRenderingMode(.hierarchical)
-                                    .foregroundStyle(Color(uiColor: .secondaryLabel))
-                                    .frame(width: 20, height: 20)
-
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text("부담 비교 기준")
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .foregroundStyle(.primary)
-
-                                    Text("후보가 비슷하면 부담 인원과 필참 여부를 보고, 일정·이동처럼 조정하기 어려운 사유를 함께 고려합니다.")
-                                        .font(.system(size: 13, weight: .medium))
-                                        .foregroundStyle(.secondary)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
+                        Picker("추천 방식", selection: $criteria.priority) {
+                            ForEach(DerivationDecisionPriority.allCases) { priority in
+                                Text(priority.title).tag(priority)
                             }
                         }
+                        .pickerStyle(.segmented)
                     }
 
                     Button(action: onStart) {
@@ -1331,19 +1305,43 @@ private struct DerivationCriteriaSheet: View {
     private func criteriaCard<Content: View>(
         title: String,
         detail: String? = nil,
+        showsPriorityHelp: Bool = false,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 13) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.primary)
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.primary)
 
-                if let detail {
-                    Text(detail)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if let detail {
+                        Text(detail)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                Spacer(minLength: 0)
+
+                if showsPriorityHelp {
+                    Button {
+                        isPriorityHelpPresented.toggle()
+                    } label: {
+                        Image(systemName: "questionmark.circle")
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundStyle(Color(uiColor: .secondaryLabel))
+                            .frame(width: 28, height: 28)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("추천 방식 설명")
+                    .sheet(isPresented: $isPriorityHelpPresented) {
+                        priorityHelpSheet
+                            .presentationDetents([.medium, .large])
+                            .presentationDragIndicator(.visible)
+                    }
                 }
             }
 
@@ -1352,6 +1350,88 @@ private struct DerivationCriteriaSheet: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private var priorityHelpSheet: some View {
+        NavigationStack {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("후보 조건이 비슷할 때 어떤 기준을 먼저 볼지 정합니다.")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    VStack(spacing: 0) {
+                        ForEach(Array(DerivationDecisionPriority.allCases.enumerated()), id: \.element.id) { index, priority in
+                            HStack(alignment: .top, spacing: 12) {
+                                Image(systemName: priority.symbolName)
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(criteria.priority == priority ? Color(uiColor: .systemBlue) : Color(uiColor: .secondaryLabel))
+                                    .frame(width: 30, height: 30)
+                                    .background(
+                                        (criteria.priority == priority ? Color(uiColor: .systemBlue) : Color(uiColor: .secondaryLabel))
+                                            .opacity(0.1),
+                                        in: Circle()
+                                    )
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack(spacing: 6) {
+                                        Text(priority.title)
+                                            .font(.system(size: 15, weight: .semibold))
+                                            .foregroundStyle(.primary)
+
+                                        if criteria.priority == priority {
+                                            Image(systemName: "checkmark")
+                                                .font(.system(size: 11, weight: .bold))
+                                                .foregroundStyle(Color(uiColor: .systemBlue))
+                                        }
+                                    }
+
+                                    Text(priority.detail)
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
+
+                            if index < DerivationDecisionPriority.allCases.count - 1 {
+                                Divider()
+                                    .padding(.leading, 56)
+                            }
+                        }
+                    }
+                    .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "info.circle.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color(uiColor: .secondaryLabel))
+
+                        Text("후보가 비슷하면 부담 인원과 사유의 조정 난이도도 함께 비교합니다.")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.horizontal, 4)
+                }
+                .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                .padding(.top, 16)
+                .padding(.bottom, 24)
+            }
+            .background(Color(uiColor: .systemGroupedBackground))
+            .navigationTitle("추천 방식")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("완료") {
+                        isPriorityHelpPresented = false
+                    }
+                }
+            }
+        }
     }
 
     private func criteriaToggleRow(
@@ -1483,6 +1563,17 @@ private enum DerivationDecisionPriority: String, CaseIterable, Identifiable {
             return "가능하더라도 부담 사유가 적은 시간을 우선합니다."
         case .requiredFirst:
             return "필참 멤버가 안정적으로 참여할 수 있는 시간을 우선합니다."
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .allAvailable:
+            return "person.3.fill"
+        case .lowBurden:
+            return "scalemass.fill"
+        case .requiredFirst:
+            return "checkmark.shield.fill"
         }
     }
 }
@@ -2029,7 +2120,7 @@ private struct AvailabilityReasonSheet: View {
             return [
                 ReasonSuggestion(title: "준비 시간 부족", reason: "바로 전 일정이 끝난 직후라 회의 준비 시간이 부족합니다.", category: .schedule),
                 ReasonSuggestion(title: "이동 부담", reason: "다른 장소에서 복귀해야 해서 시작 시간이 불안정합니다.", category: .movement),
-                ReasonSuggestion(title: "집중도 낮음", reason: "점심 직후라 중요한 의사결정 회의에는 부담됩니다.", category: .condition),
+                ReasonSuggestion(title: "집중 회복 필요", reason: "연속된 일정으로 집중력이 떨어질 수 있어 짧은 회복 시간이 필요합니다.", category: .focus),
                 ReasonSuggestion(title: "개인 일정", reason: "개인 일정 전후라 안정적으로 참여하기 어렵습니다.", category: .personal)
             ]
         case .unavailable:
@@ -2206,7 +2297,7 @@ private enum AvailabilityMode: String, CaseIterable, Identifiable {
             return [
                 "바로 전 일정이 끝난 직후라 회의 준비 시간이 부족합니다.",
                 "다른 장소에서 복귀해야 해서 시작 시간이 불안정합니다.",
-                "점심 직후라 중요한 의사결정 회의에는 부담됩니다.",
+                "연속된 일정으로 집중력이 떨어질 수 있어 짧은 회복 시간이 필요합니다.",
                 "개인 일정 전후라 안정적으로 참여하기 어렵습니다."
             ]
         case .unavailable:
@@ -2220,8 +2311,8 @@ private enum AvailabilityMode: String, CaseIterable, Identifiable {
             return "준비 시간 부족"
         case "다른 장소에서 복귀해야 해서 시작 시간이 불안정합니다.":
             return "이동 부담"
-        case "점심 직후라 중요한 의사결정 회의에는 부담됩니다.":
-            return "집중도 낮음"
+        case "연속된 일정으로 집중력이 떨어질 수 있어 짧은 회복 시간이 필요합니다.":
+            return "집중 회복 필요"
         case "개인 일정 전후라 안정적으로 참여하기 어렵습니다.":
             return "개인 일정"
         case "확정된 회의와 겹침":
@@ -3248,11 +3339,11 @@ private struct BracketReviewScreen: View {
                 )
             }
 
-            if summary.burdenMembers.first?.category == .condition {
+            if summary.burdenMembers.first?.category == .focus {
                 return CandidateSelectionRationale(
-                    title: "가벼운 컨디션 부담만 확인",
-                    detail: "6명 모두 참석 가능하고, 남은 부담도 조율 가능한 컨디션 사유입니다.",
-                    symbolName: "moon.zzz.fill",
+                    title: "집중 부담 1명 확인",
+                    detail: "6명 모두 참석 가능하고, 짧은 회복 시간으로 조율 가능한 부담입니다.",
+                    symbolName: "brain.head.profile",
                     tint: Color(uiColor: .systemTeal)
                 )
             }
@@ -3516,6 +3607,19 @@ private enum DerivationPhaseChipStyle {
     case summary
 }
 
+private extension View {
+    func pillChipIcon(
+        color: Color,
+        size: CGFloat = 10,
+        frame: CGFloat = 12
+    ) -> some View {
+        font(.system(size: size, weight: .semibold))
+            .symbolRenderingMode(.monochrome)
+            .foregroundStyle(color)
+            .frame(width: frame, height: frame)
+    }
+}
+
 private struct DerivationPhaseChipRow: View {
     let chips: [DerivationPhaseChip]
     let isVisible: Bool
@@ -3549,9 +3653,7 @@ private struct DerivationPhaseChipView: View {
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: chip.symbolName)
-                .font(.system(size: 10, weight: .bold))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(iconColor)
+                .pillChipIcon(color: textColor)
 
             Text(chip.title)
                 .font(.system(size: 12, weight: .semibold))
@@ -3564,17 +3666,6 @@ private struct DerivationPhaseChipView: View {
         .overlay {
             Capsule()
                 .stroke(strokeColor, lineWidth: 0.7)
-        }
-    }
-
-    private var iconColor: Color {
-        switch chip.style {
-        case .semantic:
-            return chip.color
-        case .criterion:
-            return chip.color.opacity(0.82)
-        case .summary:
-            return chip.color
         }
     }
 
@@ -3610,45 +3701,16 @@ private struct DerivationPhaseChipView: View {
 
 private struct RecommendationProcessingView: View {
     var body: some View {
-        VStack(spacing: 16) {
-            TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { timeline in
-                let progress = timeline.date.timeIntervalSinceReferenceDate
+        VStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(Color(uiColor: .systemBlue).opacity(0.08))
 
-                ZStack {
-                    RoundedRectangle(cornerRadius: 28, style: .continuous)
-                        .fill(Color(uiColor: .secondarySystemBackground))
-                        .frame(width: 146, height: 104)
-
-                    ForEach(0..<3, id: \.self) { index in
-                        let phase = progress * 1.3 + Double(index) * 0.48
-                        let lift = CGFloat(sin(phase) * 5)
-                        let opacity = 0.54 + (sin(phase) + 1) * 0.18
-
-                        RoundedRectangle(cornerRadius: 13, style: .continuous)
-                            .fill(Color(uiColor: .systemBackground))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                    .stroke(Color(uiColor: .separator).opacity(0.08), lineWidth: 0.8)
-                            }
-                            .frame(width: 48, height: 58)
-                            .offset(x: CGFloat(index - 1) * 28, y: lift)
-                            .opacity(opacity)
-                    }
-
-                    HStack(spacing: 5) {
-                        ForEach(0..<3, id: \.self) { index in
-                            let phase = progress * 2.2 + Double(index) * 0.55
-                            Circle()
-                                .fill(Color(uiColor: .systemBlue).opacity(0.56))
-                                .frame(width: 5, height: 5)
-                                .scaleEffect(0.76 + (sin(phase) + 1) * 0.16)
-                                .opacity(0.42 + (sin(phase) + 1) * 0.22)
-                        }
-                    }
-                    .offset(y: 42)
-                }
+                ProgressView()
+                    .controlSize(.regular)
+                    .tint(Color(uiColor: .systemBlue))
             }
-            .frame(height: 118)
+            .frame(width: 52, height: 52)
 
             Text("응답을 정리하고 있어요")
                 .font(.system(size: 14, weight: .semibold))
@@ -3661,7 +3723,8 @@ private struct RecommendationProcessingView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 26)
+        .padding(.vertical, 30)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -3694,7 +3757,7 @@ private struct FinalDerivationCandidate: Identifiable {
         let rationaleExplainsPreference = timePreference != .any
             && rationale.title.contains(timePreference.title)
         let rationaleExplainsBurden = rationale.title.contains("부담")
-            || rationale.title.contains("컨디션")
+            || rationale.title.contains("집중")
 
         if summary.unavailableCount > 0 && summary.requiredUnavailableCount == 0 {
             insights.append(
@@ -3814,36 +3877,6 @@ private struct CandidateSelectionStage: Identifiable {
                 return "바로 참석 비교"
             case .finalRanking:
                 return "대표안 선정"
-            }
-        }
-
-        var detail: String {
-            switch self {
-            case .criteria:
-                return "주최자가 제외한 시간대를 먼저 반영했어요."
-            case .requiredAttendance:
-                return "필참자가 불가로 응답한 시간은 후보에서 제외했어요."
-            case .burden:
-                return "부담 인원과 사유의 조정 난이도를 함께 비교했어요."
-            case .availability:
-                return "부담 없이 바로 참석 가능한 인원이 가장 많은 시간을 남겼어요."
-            case .finalRanking:
-                return "비슷한 조건의 후보를 비교해 안정적인 2안을 남겼어요."
-            }
-        }
-
-        var balancedDetail: String {
-            switch self {
-            case .criteria:
-                return "주최자가 제외한 시간대를\n먼저 반영했어요."
-            case .requiredAttendance:
-                return "필참자가 불가로 응답한 시간은\n후보에서 제외했어요."
-            case .burden:
-                return "부담 인원과 사유의 조정 난이도를\n함께 비교했어요."
-            case .availability:
-                return "부담 없이 바로 참석 가능한 인원이\n가장 많은 시간을 남겼어요."
-            case .finalRanking:
-                return "비슷한 조건의 후보를 비교해\n안정적인 2안을 남겼어요."
             }
         }
 
@@ -4393,6 +4426,9 @@ private struct MeetingConfirmationSuccessView: View {
     @State private var isActionVisible = false
     @State private var confettiTrigger = 0
     @State private var animationTask: Task<Void, Never>?
+    @State private var showBeam = false
+    @State private var beamOpacity = 0.0
+    @State private var beamVisibilityTask: Task<Void, Never>?
 
     private let successTint = Color(uiColor: .systemGreen)
 
@@ -4460,58 +4496,132 @@ private struct MeetingConfirmationSuccessView: View {
         .onAppear(perform: startConfirmationAnimation)
         .onDisappear {
             animationTask?.cancel()
+            beamVisibilityTask?.cancel()
         }
     }
 
     private var confirmationSummary: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 15) {
+            HStack(alignment: .center, spacing: 10) {
                 Text(meeting.title)
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.86)
 
-                Text(meeting.sectionName)
-                    .font(.system(size: 13, weight: .medium))
+                Spacer(minLength: 8)
+
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(Color(uiColor: .systemBlue))
+                    .frame(width: 24, height: 24)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(candidate.slot.fullDateText(calendar: calendar))
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+
+                Text(candidate.slot.timeRangeText)
+                    .font(.system(size: 31, weight: .bold))
+                    .monospacedDigit()
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.86)
             }
 
             Divider()
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(candidate.slot.fullDateText(calendar: calendar))
-                    .font(.system(size: 14, weight: .medium))
+            HStack(spacing: 8) {
+                Label(confirmedMetaText, systemImage: confirmedMetaSymbolName)
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .layoutPriority(1)
 
-                Text(candidate.slot.timeRangeText)
-                    .font(.system(size: 32, weight: .bold))
-                    .monospacedDigit()
-                    .foregroundStyle(.primary)
-            }
+                Spacer(minLength: 10)
 
-            HStack(spacing: 10) {
                 AvatarStack(
                     names: meeting.memberInitials,
                     maxVisible: 3,
-                    size: 28,
-                    borderColor: Color(uiColor: .secondarySystemBackground)
+                    size: 26,
+                    borderColor: Color(uiColor: .systemBackground),
+                    borderWidth: 2.2,
+                    overlap: 8
                 )
 
-                Text("참석자 \(meeting.memberCount)명")
+                Text("\(meeting.memberCount)명 참석")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.secondary)
-
-                Spacer(minLength: 0)
+                    .monospacedDigit()
+                    .lineLimit(1)
             }
+            .frame(minHeight: 28)
         }
-        .padding(20)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            Color(uiColor: .secondarySystemBackground),
-            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+        .background {
+            RoundedRectangle(cornerRadius: confirmationCardRadius, style: .continuous)
+                .fill(Color(uiColor: .systemBackground))
+                .overlay {
+                    RoundedRectangle(cornerRadius: confirmationCardRadius, style: .continuous)
+                        .fill(Color(uiColor: .systemBlue).opacity(0.035))
+                }
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: confirmationCardRadius, style: .continuous)
+                .stroke(Color(uiColor: .systemBlue).opacity(0.22), lineWidth: 0.8)
+        }
+        .borderBeam(
+            active: showBeam,
+            size: .pulseOutside,
+            colorVariant: .colorful,
+            theme: .light,
+            strength: 0.70 * beamOpacity,
+            duration: 3.8,
+            borderRadius: confirmationCardRadius,
+            brightness: 1.14,
+            saturation: 0.82,
+            hueRange: 360
         )
         .padding(.horizontal, LayoutMetrics.horizontalPadding)
+    }
+
+    private var confirmationCardRadius: CGFloat {
+        22
+    }
+
+    private var confirmedPlaceText: String? {
+        let components = meeting.subtitle
+            .components(separatedBy: " · ")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        guard let modeIndex = components.firstIndex(where: { $0 == "온라인" || $0 == "오프라인" }) else {
+            return nil
+        }
+
+        if components[modeIndex] == "온라인" {
+            return "온라인"
+        }
+
+        let locationIndex = components.index(after: modeIndex)
+        return locationIndex < components.endIndex ? components[locationIndex] : "오프라인"
+    }
+
+    private var confirmedPlaceSymbolName: String {
+        confirmedPlaceText == "온라인" ? "video.fill" : "mappin.and.ellipse"
+    }
+
+    private var confirmedMetaText: String {
+        confirmedPlaceText ?? meeting.sectionName
+    }
+
+    private var confirmedMetaSymbolName: String {
+        confirmedPlaceText == nil ? "person.3.fill" : confirmedPlaceSymbolName
     }
 
     private func startConfirmationAnimation() {
@@ -4522,6 +4632,9 @@ private struct MeetingConfirmationSuccessView: View {
         isSummaryVisible = false
         isActionVisible = false
         confettiTrigger = 0
+        showBeam = false
+        beamOpacity = 0
+        beamVisibilityTask?.cancel()
 
         guard !reduceMotion else {
             circleProgress = 1
@@ -4529,6 +4642,8 @@ private struct MeetingConfirmationSuccessView: View {
             isTitleVisible = true
             isSummaryVisible = true
             isActionVisible = true
+            showBeam = true
+            beamOpacity = 1
             return
         }
 
@@ -4563,12 +4678,31 @@ private struct MeetingConfirmationSuccessView: View {
             withAnimation(.easeOut(duration: 0.46)) {
                 isSummaryVisible = true
             }
+            scheduleBeamAppearance()
 
             try? await Task.sleep(nanoseconds: 220_000_000)
             guard !Task.isCancelled else { return }
 
             withAnimation(.easeOut(duration: 0.38)) {
                 isActionVisible = true
+            }
+        }
+    }
+
+    private func scheduleBeamAppearance() {
+        beamVisibilityTask?.cancel()
+        beamVisibilityTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(0.42))
+                try Task.checkCancellation()
+            } catch {
+                return
+            }
+
+            showBeam = true
+            beamOpacity = 0
+            withAnimation(.easeOut(duration: 0.62)) {
+                beamOpacity = 1
             }
         }
     }
@@ -4721,7 +4855,7 @@ private final class CelebrationConfettiCanvas: UIView {
 
         switch particleStyle(for: index) {
         case .circle:
-            let diameter = random.value(in: 8.5...12.3)
+            let diameter = random.value(in: 10.2...14.6)
             container.bounds = CGRect(x: 0, y: 0, width: diameter, height: diameter)
             addSolidFaces(
                 to: container,
@@ -4731,8 +4865,11 @@ private final class CelebrationConfettiCanvas: UIView {
             return ThreadsConfettiParticle(container: container)
 
         case .rectangle:
-            let width = random.value(in: 7.0...10.3)
-            let height = random.value(in: 14.0...21.3)
+            let isCompact = index % 4 == 2
+            let width = random.value(in: 8.6...13.2)
+            let height = isCompact
+                ? random.value(in: 11.5...16.8)
+                : random.value(in: 16.5...24.5)
             container.bounds = CGRect(x: 0, y: 0, width: width, height: height)
             addSolidFaces(
                 to: container,
@@ -4797,13 +4934,27 @@ private final class CelebrationConfettiCanvas: UIView {
     ) -> CAAnimationGroup {
         var random = DeterministicConfettiRandom(seed: seed(side: side, index: index) ^ 0xA5A5_A5A5)
         let direction: CGFloat = side == 0 ? 1 : -1
-        let startX: CGFloat = side == 0 ? -12 : size.width + 12
-        let startY = random.value(in: size.height * 0.07...size.height * 0.72)
+        let startX: CGFloat = side == 0 ? -16 : size.width + 16
+        let verticalBand = (index * 5 + side * 3) % 8
+        let verticalBandStart = 0.04 + CGFloat(verticalBand) * 0.1
+        let verticalBandEnd = min(verticalBandStart + 0.08, 0.82)
+        let startY = size.height * random.value(in: verticalBandStart...verticalBandEnd)
         let duration = random.value(in: 1.82...2.48)
         let delay = random.value(in: 0...0.18)
-        let horizontalTravel = random.value(in: size.width * 0.42...size.width * 0.96)
-        let verticalVelocity = random.value(in: -118...72)
-        let gravity = random.value(in: 98...162)
+        let travelFractionRange: ClosedRange<CGFloat>
+        switch index % 6 {
+        case 0:
+            travelFractionRange = 0.12...0.28
+        case 1, 4:
+            travelFractionRange = 0.28...0.5
+        case 2, 5:
+            travelFractionRange = 0.5...0.72
+        default:
+            travelFractionRange = 0.72...0.96
+        }
+        let horizontalTravel = size.width * random.value(in: travelFractionRange)
+        let verticalVelocity = random.value(in: -132...82)
+        let gravity = random.value(in: 94...158)
         let waveAmplitude = random.value(in: 3...12)
         let waveFrequency = random.value(in: 2.6...5.2)
         let wavePhase = random.value(in: 0...(CGFloat.pi * 2))
@@ -4915,9 +5066,6 @@ private struct FinalCandidateDetailCard: View {
     let calendar: Calendar
     let isSelected: Bool
     let onSelect: () -> Void
-    @State private var showBeam = false
-    @State private var beamOpacity = 0.0
-    @State private var beamVisibilityTask: Task<Void, Never>?
 
     private var tint: Color {
         candidate.rank == 0 ? Color(uiColor: .systemBlue) : Color(uiColor: .systemIndigo)
@@ -4957,77 +5105,9 @@ private struct FinalCandidateDetailCard: View {
             RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                 .stroke(cardStroke, lineWidth: isSelected ? 0.8 : 0.7)
         }
-        .borderBeam(
-            active: showBeam && candidate.rank == 0,
-            size: .pulseOutside,
-            colorVariant: .colorful,
-            theme: .light,
-            strength: 0.70 * beamOpacity,
-            duration: 3.8,
-            borderRadius: cardRadius,
-            brightness: 1.14,
-            saturation: 0.82,
-            hueRange: 360
-        )
         .contentShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
         .onTapGesture {
             onSelect()
-        }
-        .onAppear {
-            updateBeamVisibility(for: isSelected)
-        }
-        .onChange(of: isSelected) { _, newValue in
-            updateBeamVisibility(for: newValue)
-        }
-        .onDisappear {
-            beamVisibilityTask?.cancel()
-        }
-    }
-
-    private func updateBeamVisibility(for selected: Bool) {
-        beamVisibilityTask?.cancel()
-
-        if selected && candidate.rank == 0 {
-            showBeam = false
-            beamOpacity = 0
-
-            beamVisibilityTask = Task { @MainActor in
-                do {
-                    try await Task.sleep(for: .seconds(0.42))
-                    try Task.checkCancellation()
-                } catch {
-                    return
-                }
-
-                guard isSelected && candidate.rank == 0 else {
-                    return
-                }
-
-                showBeam = true
-                beamOpacity = 0
-                withAnimation(.easeOut(duration: 0.62)) {
-                    beamOpacity = 1
-                }
-            }
-        } else {
-            withAnimation(.easeIn(duration: 0.16)) {
-                beamOpacity = 0
-            }
-
-            beamVisibilityTask = Task { @MainActor in
-                do {
-                    try await Task.sleep(for: .seconds(0.18))
-                    try Task.checkCancellation()
-                } catch {
-                    return
-                }
-
-                guard !isSelected || candidate.rank != 0 else {
-                    return
-                }
-
-                showBeam = false
-            }
         }
     }
 
@@ -5253,13 +5333,11 @@ private struct FinalCandidateInsightPillRow: View {
         ForEach(Array(insights.prefix(maxVisible))) { insight in
             HStack(spacing: 4) {
                 Image(systemName: insight.symbolName)
-                    .font(.system(size: 9, weight: .bold))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(insight.color)
+                    .pillChipIcon(color: insight.color)
 
                 Text(insight.title)
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(insight.color)
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
             }
@@ -5750,13 +5828,13 @@ private struct FinalCandidateDetailSheet: View {
     private func reasonStatusChip(member: TeamResponseReason, status: String, tint: Color) -> some View {
         HStack(spacing: 5) {
             Image(systemName: status == "부담" ? member.category.symbolName : "xmark.circle.fill")
-                .font(.system(size: 10, weight: .bold))
+                .pillChipIcon(color: tint)
 
             Text(status == "부담" ? member.category.burdenTitle : status)
                 .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(tint)
                 .lineLimit(1)
         }
-        .foregroundStyle(tint)
         .padding(.horizontal, 9)
         .frame(height: 24)
         .background(tint.opacity(0.1), in: Capsule())
@@ -5810,15 +5888,14 @@ private struct FinalBurdenCategoryPillRow: View {
             ForEach(summaries.prefix(2)) { summary in
                 HStack(spacing: 4) {
                     Image(systemName: summary.category.symbolName)
-                        .font(.system(size: 9, weight: .bold))
-                        .symbolRenderingMode(.hierarchical)
+                        .pillChipIcon(color: summary.category.color)
 
                     Text("\(summary.category.title) \(summary.count)")
                         .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(summary.category.color)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                 }
-                .foregroundStyle(summary.category.color)
                 .padding(.horizontal, 8)
                 .frame(height: 25)
                 .background(summary.category.color.opacity(0.1), in: Capsule())
@@ -5926,16 +6003,10 @@ private struct CandidateSelectionProcessView: View {
     }
 
     private var processSummary: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("\(initialCandidateCount)개 후보에서 \(finalCandidateCount)개를 남겼어요")
-                .font(.system(size: 22, weight: .bold))
-                .foregroundStyle(.primary)
-                .monospacedDigit()
-
-            Text("각 단계의 기준과 제외된 이유를 순서대로 정리했어요.")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(.secondary)
-        }
+        Text("\(initialCandidateCount)개 중 \(finalCandidateCount)개를 추천했어요")
+            .font(.system(size: 22, weight: .bold))
+            .foregroundStyle(.primary)
+            .monospacedDigit()
     }
 
     private var stagePicker: some View {
@@ -5999,7 +6070,11 @@ private struct CandidateSelectionStagePage: View {
                 stageHeader
                 countFlow
                     .padding(.top, 18)
-                    .padding(.bottom, 20)
+
+                Divider()
+                    .overlay(Color(uiColor: .separator).opacity(0.12))
+                    .padding(.top, 18)
+                    .padding(.bottom, 18)
 
                 if stage.kind == .finalRanking {
                     finalCandidateSection
@@ -6026,27 +6101,39 @@ private struct CandidateSelectionStagePage: View {
                 .frame(width: 34, height: 34)
                 .background(stage.kind.tint.opacity(0.1), in: Circle())
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(stage.kind.title)
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.primary)
-
-                ViewThatFits(in: .horizontal) {
-                    Text(stage.kind.detail)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-
-                    Text(stage.kind.balancedDetail)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
-                .lineSpacing(2)
-            }
-            .layoutPriority(1)
+            Text(stageOutcomeText)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.92)
+                .layoutPriority(1)
 
             Spacer(minLength: 4)
+        }
+    }
+
+    private var stageOutcomeText: String {
+        let removedCount = stage.eliminatedSlots.count
+
+        switch stage.kind {
+        case .criteria:
+            return removedCount == 0
+                ? "주최자 기준 · 제외 없음"
+                : "주최자 기준 · \(removedCount)개 제외"
+        case .requiredAttendance:
+            return removedCount == 0
+                ? "필참 불가 · 제외 없음"
+                : "필참 불가 · \(removedCount)개 제외"
+        case .burden:
+            return removedCount == 0
+                ? "부담 높음 · 제외 없음"
+                : "부담 높음 · \(removedCount)개 제외"
+        case .availability:
+            return removedCount == 0
+                ? "바로 참석 적음 · 제외 없음"
+                : "바로 참석 적음 · \(removedCount)개 제외"
+        case .finalRanking:
+            return "안정적인 \(stage.remainingCount)개 추천"
         }
     }
 
@@ -6089,20 +6176,7 @@ private struct CandidateSelectionStagePage: View {
             }
             .padding(.vertical, 14)
         } else {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text("제외된 일정")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.primary)
-
-                    Spacer()
-
-                    Text("\(stage.eliminatedSlots.count)개")
-                        .font(.system(size: 13, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(stage.kind.tint)
-                }
-
+            VStack(alignment: .leading, spacing: 10) {
                 connectedEliminatedRows
             }
         }
@@ -6124,10 +6198,6 @@ private struct CandidateSelectionStagePage: View {
 
     private var finalCandidateSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("추천 시간")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.primary)
-
             ForEach(stage.finalCandidates) { candidate in
                 CandidateSelectionFinalRow(candidate: candidate, calendar: calendar)
             }
@@ -6407,7 +6477,7 @@ private struct CandidateSelectionSlotRow: View {
     private var expandedDetails: some View {
         if let summary {
             VStack(alignment: .leading, spacing: 10) {
-                if let expandedSummaryMessage {
+                if stageKind == .finalRanking, let expandedSummaryMessage {
                     CandidateSelectionDetailMessage(
                         text: expandedSummaryMessage.text,
                         symbolName: expandedSummaryMessage.symbolName,
@@ -9321,7 +9391,7 @@ private struct CreateMeetingStepChip: View {
 
             if isCompleted && showsCompletionIcon {
                 Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 13, weight: .semibold))
+                    .pillChipIcon(color: foregroundStyle, size: 12, frame: 14)
             }
         }
         .foregroundStyle(foregroundStyle)
@@ -10742,13 +10812,11 @@ private struct ReviewMetaPill: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: systemImage)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(tint ?? Color(uiColor: .secondaryLabel))
-                .frame(width: 13, height: 13)
+                .pillChipIcon(color: contentColor, size: 11, frame: 13)
 
             Text(text)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(tint == nil ? Color(uiColor: .secondaryLabel) : Color(uiColor: .label))
+                .foregroundStyle(contentColor)
                 .lineLimit(1)
         }
         .padding(.horizontal, 10)
@@ -10762,6 +10830,10 @@ private struct ReviewMetaPill: View {
         }
 
         return tint.opacity(0.11)
+    }
+
+    private var contentColor: Color {
+        tint ?? Color(uiColor: .secondaryLabel)
     }
 }
 
@@ -14693,7 +14765,7 @@ private struct TeamResponseSummary: Equatable {
         let fallbackName: String
 
         if rank == 0 {
-            reason = "컨디션: 오전 집중 작업이 이어진 뒤라\n짧은 회복 시간이 있으면 더 안정적입니다."
+            reason = "집중: 연속된 일정으로 집중력이 떨어질 수 있어\n짧은 회복 시간이 필요합니다."
             fallbackName = "송승아"
         } else {
             reason = "일정: 바로 전 고객 피드백 정리 마감과 붙어 있어\n회의 준비 시간이 거의 없습니다."
@@ -14734,10 +14806,10 @@ private struct TeamResponseSummary: Equatable {
         let burdenReasons = [
             "일정: 바로 전 디자인 리뷰가 끝난 직후라\n회의 준비 시간이 거의 없습니다.",
             "일정: 고객 피드백 정리 마감과 붙어 있어\n참석은 가능하지만 집중이 분산됩니다.",
-            "이동: 외부 사용자 인터뷰 후 복귀 시간이 애매해\n10분 이상 늦을 수 있습니다.",
-            "이동: 촬영 장비 반납 후 회의실로 이동해야 해서\n시작 시간이 불안정합니다.",
-            "컨디션: 점심 직후라 집중도가 낮아\n중요한 의사결정 회의에는 부담됩니다.",
-            "컨디션: 오전 회의가 연속으로 잡혀 있어\n짧은 회복 시간이 필요합니다.",
+            "이동: 외부 사용자 인터뷰 후 복귀 중이라\n10분 이상 늦을 수 있습니다.",
+            "일정: 촬영 장비 반납 일정과 붙어 있어\n회의 준비 시간이 부족합니다.",
+            "집중: 집중 업무 직후라 중요한 의사결정에\n바로 참여하기 부담됩니다.",
+            "집중: 피로가 누적되어 회의에 집중하기\n어려운 시간대입니다.",
             "개인: 어린이집 하원 연락을 확인해야 해서\n중간 이탈 가능성이 있습니다.",
             "개인: 병원 예약 전후라 참석은 가능하지만\n안정적으로 참여하기 어렵습니다."
         ]
@@ -14868,7 +14940,7 @@ private struct BurdenCategorySummary: Identifiable, Equatable {
 private enum BurdenCategory: String, CaseIterable, Identifiable {
     case schedule
     case movement
-    case condition
+    case focus
     case personal
 
     var id: String {
@@ -14881,8 +14953,8 @@ private enum BurdenCategory: String, CaseIterable, Identifiable {
             return "일정"
         case .movement:
             return "이동"
-        case .condition:
-            return "컨디션"
+        case .focus:
+            return "집중"
         case .personal:
             return "개인"
         }
@@ -14898,7 +14970,7 @@ private enum BurdenCategory: String, CaseIterable, Identifiable {
             return 3
         case .personal:
             return 2
-        case .condition:
+        case .focus:
             return 1
         }
     }
@@ -14909,7 +14981,7 @@ private enum BurdenCategory: String, CaseIterable, Identifiable {
             return Color(uiColor: .systemRed)
         case .movement:
             return Color(uiColor: .systemOrange)
-        case .condition:
+        case .focus:
             return Color(uiColor: .systemTeal)
         case .personal:
             return Color(uiColor: .systemPurple)
@@ -14922,28 +14994,41 @@ private enum BurdenCategory: String, CaseIterable, Identifiable {
             return "calendar.badge.clock"
         case .movement:
             return "arrow.triangle.swap"
-        case .condition:
-            return "moon.zzz.fill"
+        case .focus:
+            return "brain.head.profile"
         case .personal:
             return "person.fill"
         }
     }
 
     static func classify(reason: String) -> BurdenCategory {
+        let normalizedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let explicitPrefixes: [(prefixes: [String], category: BurdenCategory)] = [
+            (["집중:", "집중 부담:", "집중도:", "집중도 부담:", "컨디션:", "컨디션 부담:"], .focus),
+            (["이동:", "이동 부담:"], .movement),
+            (["일정:", "일정 부담:"], .schedule),
+            (["개인:", "개인 부담:"], .personal)
+        ]
+
+        for mapping in explicitPrefixes where mapping.prefixes.contains(where: normalizedReason.hasPrefix) {
+            return mapping.category
+        }
+
         if reason.contains("개인 일정") || reason.contains("병원") || reason.contains("가족") || reason.contains("하원") {
             return .personal
         }
 
-        if reason.contains("회의") || reason.contains("일정") || reason.contains("붙어") || reason.contains("확정") || reason.contains("마감") || reason.contains("승인") || reason.contains("고객") {
-            return .schedule
+        if reason.contains("점심") || reason.contains("집중") || reason.contains("피곤") || reason.contains("피로") || reason.contains("졸") || reason.contains("컨디션") || reason.contains("회복") {
+            return .focus
         }
 
         if reason.contains("이동") || reason.contains("외근") || reason.contains("복귀") || reason.contains("도착") || reason.contains("장비") || reason.contains("인터뷰") {
             return .movement
         }
 
-        if reason.contains("점심") || reason.contains("집중") || reason.contains("피곤") || reason.contains("컨디션") || reason.contains("아침") || reason.contains("퇴근") || reason.contains("회복") || reason.contains("연속") {
-            return .condition
+        if reason.contains("회의") || reason.contains("일정") || reason.contains("붙어") || reason.contains("확정") || reason.contains("마감") || reason.contains("승인") || reason.contains("고객") {
+            return .schedule
         }
 
         return .personal
@@ -14954,9 +15039,9 @@ private enum ResponseReasonFormatter {
     static func displayText(from reason: String) -> String {
         let prefixes = [
             "부담:", "불가:", "가능:",
-            "일정:", "이동:", "컨디션:", "개인:",
-            "일정 부담:", "이동 부담:", "컨디션 부담:", "개인 부담:",
-            "일정 불가:", "이동 불가:", "컨디션 불가:", "개인 불가:"
+            "일정:", "이동:", "집중:", "집중도:", "컨디션:", "개인:",
+            "일정 부담:", "이동 부담:", "집중 부담:", "집중도 부담:", "컨디션 부담:", "개인 부담:",
+            "일정 불가:", "이동 불가:", "집중도 불가:", "컨디션 불가:", "개인 불가:"
         ]
         var cleaned = reason.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -15128,13 +15213,13 @@ private struct AvailabilityBlockDetailSheet: View {
     private var burdenReasonChip: some View {
         HStack(spacing: 5) {
             Image(systemName: burdenReasonCategory.symbolName)
-                .font(.system(size: 10, weight: .bold))
+                .pillChipIcon(color: detail.mode.tint)
 
             Text(burdenReasonCategory.burdenTitle)
                 .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(detail.mode.tint)
                 .lineLimit(1)
         }
-        .foregroundStyle(detail.mode.tint)
         .padding(.horizontal, 9)
         .frame(height: 24)
         .background(detail.mode.tint.opacity(0.1), in: Capsule())
@@ -15415,8 +15500,7 @@ private struct TeamResponseDetailSheet: View {
     private func responseIssueCategoryChip(_ category: BurdenCategory, status: String, tint: Color) -> some View {
         HStack(spacing: 5) {
             Image(systemName: responseIssueChipSymbol(category, status: status))
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(tint)
+                .pillChipIcon(color: tint)
 
             Text(responseIssueChipTitle(category, status: status))
                 .font(.system(size: 12, weight: .semibold))
