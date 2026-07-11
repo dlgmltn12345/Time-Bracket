@@ -156,6 +156,11 @@ struct ContentView: View {
         )
         meetings[meetingIndex] = updatedMeeting
         selectedMeeting = updatedMeeting
+        selectedDate = calendar.startOfDay(for: candidate.slot.date)
+
+        if let monthStart = calendar.dateInterval(of: .month, for: candidate.slot.date)?.start {
+            displayedMonth = monthStart
+        }
     }
 
     private func makeHomeMeeting(from draft: MeetingDraft) -> HomeMeeting {
@@ -165,6 +170,7 @@ struct ContentView: View {
             id: UUID().uuidString,
             title: draft.title.trimmingCharacters(in: .whitespacesAndNewlines),
             sectionName: draft.sectionName,
+            iconName: draft.iconName,
             subtitle: meetingSubtitle(from: draft),
             dateRange: dateRangeText(for: candidateDates),
             timeRange: draft.availabilityWindowText,
@@ -265,7 +271,7 @@ private struct MeetingWorkspaceScreen: View {
     var body: some View {
         if let meeting {
             switch meeting.stage {
-            case .hostAvailability, .collectingResponses:
+            case .hostAvailability, .collectingResponses, .confirmed:
                 CalendarScreen(
                     selectedDate: $selectedDate,
                     displayedMonth: $displayedMonth,
@@ -288,8 +294,6 @@ private struct MeetingWorkspaceScreen: View {
                         onConfirmMeeting(meeting.id, candidate)
                     }
                 )
-            case .confirmed:
-                ConfirmedMeetingScreen(meeting: meeting)
             }
         } else {
             EmptyCalendarWorkspaceScreen()
@@ -332,7 +336,7 @@ private enum LayoutMetrics {
     static let panelCornerRadius: CGFloat = 20
     static let calendarBottomPadding: CGFloat = 10
     static let calendarDayCellSize: CGFloat = 42
-    static let timeAxisWidth: CGFloat = 24
+    static let timeAxisWidth: CGFloat = 30
     static let scheduleColumnSpacing: CGFloat = 5
     static let scheduleTrailingPadding: CGFloat = 12
 
@@ -397,7 +401,7 @@ private struct CalendarScreen: View {
 
                 CompactMeetingContextBar(
                     meeting: meeting,
-                    statusText: isSharedCalendar ? "팀원 응답 보기" : "내 시간 입력"
+                    statusText: calendarStatusText
                 )
 
                 GeometryReader { proxy in
@@ -407,13 +411,13 @@ private struct CalendarScreen: View {
                         blendDuration: 0.12
                     )
                     let handleBandHeight: CGFloat = 20
-                    let toolbarReservedInset: CGFloat = 76
+                    let toolbarReservedInset: CGFloat = isConfirmedCalendar ? 12 : 76
                     let clampedCalendarHeight = min(
                         max(calendarHeight, collapsedCalendarHeight),
                         expandedCalendarHeight
                     )
                     let expansionProgress = (clampedCalendarHeight - collapsedCalendarHeight) / (expandedCalendarHeight - collapsedCalendarHeight)
-                    let scheduleRowHeight: CGFloat = 44
+                    let scheduleRowHeight: CGFloat = isConfirmedCalendar ? 60 : 44
                     let scheduleHeight = max(proxy.size.height - clampedCalendarHeight - handleBandHeight, 0)
 
                     VStack(spacing: 0) {
@@ -425,6 +429,9 @@ private struct CalendarScreen: View {
                                 selectedDate: $selectedDate,
                                 rangeStartDate: meeting.candidateStartDate,
                                 rangeEndDate: meeting.candidateEndDate,
+                                showsDateRange: !isConfirmedCalendar,
+                                eventDates: isConfirmedCalendar ? [meeting.focusDate] : [],
+                                eventTint: meeting.iconTint,
                                 expansionProgress: expansionProgress,
                                 calendar: calendar
                             )
@@ -458,30 +465,42 @@ private struct CalendarScreen: View {
                         ZStack {
                             Color.primary
 
-                            ScheduleGridView(
-                                selectedDate: selectedDate,
-                                visibleDates: visibleScheduleDates,
-                                pageIndex: schedulePageIndex,
-                                pageCount: scheduleDatePages.count,
-                                events: events,
-                                availabilityEntries: scheduleAvailabilityEntries,
-                                teamResponseSummaries: isViewingTeamResponses ? teamResponseSummaries : [:],
-                                excludedTimeRule: meeting.excludedTimeRule,
-                                isResponseMode: isViewingTeamResponses,
-                                animatesResponseReveal: isViewingTeamResponses && !suppressInitialTeamResponseReveal,
-                                allowsAvailabilityEditing: !isSharedCalendar,
-                                selectedAvailabilityMode: availabilityMode,
-                                rowHeight: scheduleRowHeight,
-                                bottomContentInset: toolbarReservedInset,
-                                calendar: calendar,
-                                onTapSlot: updateAvailabilitySlot,
-                                onCommitSlots: commitAvailabilitySlots,
-                                onEditAvailabilityBlock: editAvailabilityBlock,
-                                onMovePage: moveSchedulePage,
-                                onResponseRevealComplete: {
-                                    isTeamResponseRevealComplete = true
+                            Group {
+                                if isConfirmedCalendar {
+                                    ConfirmedDayScheduleView(
+                                        selectedDate: selectedDate,
+                                        meeting: meeting,
+                                        rowHeight: scheduleRowHeight,
+                                        bottomContentInset: toolbarReservedInset,
+                                        calendar: calendar
+                                    )
+                                } else {
+                                    ScheduleGridView(
+                                        selectedDate: selectedDate,
+                                        visibleDates: visibleScheduleDates,
+                                        pageIndex: schedulePageIndex,
+                                        pageCount: scheduleDatePages.count,
+                                        events: events,
+                                        availabilityEntries: scheduleAvailabilityEntries,
+                                        teamResponseSummaries: isViewingTeamResponses ? teamResponseSummaries : [:],
+                                        excludedTimeRule: meeting.excludedTimeRule,
+                                        isResponseMode: isViewingTeamResponses,
+                                        animatesResponseReveal: isViewingTeamResponses && !suppressInitialTeamResponseReveal,
+                                        allowsAvailabilityEditing: !isSharedCalendar,
+                                        selectedAvailabilityMode: availabilityMode,
+                                        rowHeight: scheduleRowHeight,
+                                        bottomContentInset: toolbarReservedInset,
+                                        calendar: calendar,
+                                        onTapSlot: updateAvailabilitySlot,
+                                        onCommitSlots: commitAvailabilitySlots,
+                                        onEditAvailabilityBlock: editAvailabilityBlock,
+                                        onMovePage: moveSchedulePage,
+                                        onResponseRevealComplete: {
+                                            isTeamResponseRevealComplete = true
+                                        }
+                                    )
                                 }
-                            )
+                            }
                             .frame(height: scheduleHeight)
                             .clipShape(
                                 UnevenRoundedRectangle(
@@ -503,7 +522,9 @@ private struct CalendarScreen: View {
             .animation(.easeInOut(duration: 0.28), value: isDerivationTransitionActive)
 
             Group {
-                if isSharedCalendar {
+                if isConfirmedCalendar {
+                    EmptyView()
+                } else if isSharedCalendar {
                     SharedCalendarToolbar(
                         selectedViewMode: $sharedCalendarViewMode,
                         respondedCount: displayedRespondedCount,
@@ -605,6 +626,18 @@ private struct CalendarScreen: View {
 
     private var isSharedCalendar: Bool {
         meeting.stage == .collectingResponses
+    }
+
+    private var isConfirmedCalendar: Bool {
+        meeting.stage == .confirmed
+    }
+
+    private var calendarStatusText: String {
+        if isConfirmedCalendar {
+            return "회의 확정"
+        }
+
+        return isSharedCalendar ? "팀원 응답 보기" : "내 시간 입력"
     }
 
     private var isViewingTeamResponses: Bool {
@@ -1363,7 +1396,7 @@ private struct DerivationCriteriaSheet: View {
 
                     VStack(spacing: 0) {
                         ForEach(Array(DerivationDecisionPriority.allCases.enumerated()), id: \.element.id) { index, priority in
-                            HStack(alignment: .top, spacing: 12) {
+                            HStack(alignment: .center, spacing: 12) {
                                 Image(systemName: priority.symbolName)
                                     .font(.system(size: 14, weight: .semibold))
                                     .foregroundStyle(criteria.priority == priority ? Color(uiColor: .systemBlue) : Color(uiColor: .secondaryLabel))
@@ -1405,17 +1438,7 @@ private struct DerivationCriteriaSheet: View {
                     }
                     .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
 
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "info.circle.fill")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color(uiColor: .secondaryLabel))
-
-                        Text("후보가 비슷하면 부담 인원과 사유의 조정 난이도도 함께 비교합니다.")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(.horizontal, 4)
+                    burdenPriorityLegend
                 }
                 .padding(.horizontal, LayoutMetrics.horizontalPadding)
                 .padding(.top, 16)
@@ -1432,6 +1455,70 @@ private struct DerivationCriteriaSheet: View {
                 }
             }
         }
+    }
+
+    private var burdenPriorityLegend: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "info.circle.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(burdenTint)
+                    .frame(width: 30, height: 30)
+                    .background(burdenTint.opacity(0.1), in: Circle())
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("부담 반영 순서")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.primary)
+
+                    Text("후보가 비슷하면 부담 인원과 사유의 조정 난이도를 함께 비교합니다.")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Divider()
+                .padding(.leading, 42)
+
+            HStack(spacing: 7) {
+                burdenPriorityItem(.schedule)
+                priorityOperator("=")
+                burdenPriorityItem(.movement)
+                priorityOperator(">")
+                burdenPriorityItem(.personal)
+                priorityOperator(">")
+                burdenPriorityItem(.focus)
+            }
+            .padding(.leading, 42)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("부담 반영 순서, 일정과 이동이 가장 높고, 개인, 집중 순서")
+        }
+        .padding(14)
+        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private var burdenTint: Color {
+        Color(uiColor: .systemOrange)
+    }
+
+    private func burdenPriorityItem(_ category: BurdenCategory) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: category.symbolName)
+                .font(.system(size: 11, weight: .semibold))
+
+            Text(category.title)
+                .font(.system(size: 12, weight: .semibold))
+        }
+        .foregroundStyle(burdenTint)
+        .lineLimit(1)
+    }
+
+    private func priorityOperator(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(Color(uiColor: .tertiaryLabel))
     }
 
     private func criteriaToggleRow(
@@ -1562,7 +1649,7 @@ private enum DerivationDecisionPriority: String, CaseIterable, Identifiable {
         case .lowBurden:
             return "가능하더라도 부담 사유가 적은 시간을 우선합니다."
         case .requiredFirst:
-            return "필참 멤버가 안정적으로 참여할 수 있는 시간을 우선합니다."
+            return "필참 멤버가 가능한 시간을 우선합니다."
         }
     }
 
@@ -3119,36 +3206,46 @@ private struct BracketReviewScreen: View {
 
     private var filteringChips: [DerivationPhaseChip] {
         var chips: [DerivationPhaseChip] = []
-        let neutralColor = Color(uiColor: .systemGray)
 
         if meeting.excludedTimeRule.isEnabled {
             chips.append(
                 DerivationPhaseChip(
                     title: meeting.excludedTimeRule.title,
                     symbolName: "clock.badge.xmark.fill",
-                    color: neutralColor,
+                    color: excludedTimeIconColor,
                     style: .criterion
                 )
             )
         }
 
         if meeting.derivationCriteria.avoidsAfterLunch {
-            chips.append(DerivationPhaseChip(title: "점심 직후 제외", symbolName: "fork.knife", color: neutralColor, style: .criterion))
+            chips.append(DerivationPhaseChip(title: "점심 직후 제외", symbolName: "fork.knife", color: Color(uiColor: .systemOrange), style: .criterion))
         }
 
         if meeting.derivationCriteria.avoidsNearLeaving {
-            chips.append(DerivationPhaseChip(title: "퇴근 직전 제외", symbolName: "moon.zzz.fill", color: neutralColor, style: .criterion))
+            chips.append(DerivationPhaseChip(title: "퇴근 직전 제외", symbolName: "moon.zzz.fill", color: Color(uiColor: .systemIndigo), style: .criterion))
         }
 
         if meeting.derivationCriteria.avoidsEarlyMorning {
-            chips.append(DerivationPhaseChip(title: "첫 시간 제외", symbolName: "sunrise.fill", color: neutralColor, style: .criterion))
+            chips.append(DerivationPhaseChip(title: "첫 시간 제외", symbolName: "sunrise.fill", color: Color(uiColor: .systemOrange), style: .criterion))
         }
 
         if chips.isEmpty {
-            chips.append(DerivationPhaseChip(title: "기본 기준", symbolName: "slider.horizontal.3", color: neutralColor, style: .criterion))
+            chips.append(DerivationPhaseChip(title: "기본 기준", symbolName: "slider.horizontal.3", color: Color(uiColor: .systemBlue), style: .criterion))
         }
 
         return Array(chips.prefix(3))
+    }
+
+    private var excludedTimeIconColor: Color {
+        switch meeting.excludedTimeRule.id {
+        case "lunch", "breakfast":
+            return Color(uiColor: .systemOrange)
+        case "dinner":
+            return Color(uiColor: .systemIndigo)
+        default:
+            return Color(uiColor: .systemBlue)
+        }
     }
 
     private var timePreferenceChip: DerivationPhaseChip? {
@@ -3653,7 +3750,7 @@ private struct DerivationPhaseChipView: View {
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: chip.symbolName)
-                .pillChipIcon(color: textColor)
+                .pillChipIcon(color: iconColor)
 
             Text(chip.title)
                 .font(.system(size: 12, weight: .semibold))
@@ -3676,6 +3773,10 @@ private struct DerivationPhaseChipView: View {
         case .criterion, .summary:
             return Color(uiColor: .label)
         }
+    }
+
+    private var iconColor: Color {
+        chip.color
     }
 
     private var backgroundColor: Color {
@@ -5152,8 +5253,8 @@ private struct FinalCandidateDetailCard: View {
     private var recommendationReason: some View {
         HStack(alignment: .center, spacing: 10) {
             Image(systemName: candidate.rationale.symbolName)
-                .font(.system(size: 15, weight: .semibold))
-                .symbolRenderingMode(.hierarchical)
+                .font(.system(size: 15, weight: candidate.rank == 0 ? .semibold : .bold))
+                .symbolRenderingMode(candidate.rank == 0 ? .hierarchical : .monochrome)
                 .foregroundStyle(candidate.rationale.tint)
                 .frame(width: 28, height: 28)
                 .background(reasonIconBackground, in: Circle())
@@ -8187,34 +8288,179 @@ private struct MeetingDecisionCandidate: Identifiable, Hashable {
     }
 }
 
-private struct ConfirmedMeetingScreen: View {
+private struct ConfirmedDayScheduleView: View {
+    let selectedDate: Date?
     let meeting: HomeMeeting
+    let rowHeight: CGFloat
+    let bottomContentInset: CGFloat
+    let calendar: Calendar
+
+    private let hours = Array(9..<18)
+    private let workStartHour = 9
+    private let workEndHour = 18
 
     var body: some View {
-        VStack(spacing: 0) {
-            WorkspaceHeader(title: "확정된 회의")
-            MeetingContextBar(meeting: meeting)
+        GeometryReader { proxy in
+            let contentWidth = max(proxy.size.width - LayoutMetrics.horizontalPadding * 2, 0)
+            let timelineWidth = max(
+                contentWidth - LayoutMetrics.timeAxisWidth - LayoutMetrics.scheduleColumnSpacing,
+                0
+            )
 
-            VStack(spacing: HomeGridMetrics.gap) {
-                WorkspaceStatusCard(
-                    title: "\(meeting.confirmedDay)일 \(meeting.timeRange)",
-                    detail: "\(meeting.title) 시간이 확정됨",
-                    symbolName: "checkmark.circle.fill",
-                    tint: Color(uiColor: .systemGreen)
-                )
+            ScrollView(.vertical, showsIndicators: false) {
+                HStack(alignment: .top, spacing: LayoutMetrics.scheduleColumnSpacing) {
+                    timeAxis
+                        .frame(width: LayoutMetrics.timeAxisWidth)
 
-                WorkspaceActionCard(
-                    title: "캘린더에 추가",
-                    detail: "확정된 일정을 내 캘린더로 반영",
-                    buttonTitle: "추가"
-                )
+                    VStack(spacing: 0) {
+                        ZStack(alignment: .topLeading) {
+                            gridBackground(width: timelineWidth)
 
-                Spacer()
+                            if isMeetingDate {
+                                confirmedMeetingBlock(width: timelineWidth)
+                            }
+                        }
+                        .frame(width: timelineWidth, height: gridHeight)
+                    }
+                }
+                .frame(width: contentWidth, alignment: .leading)
+                .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                .padding(.bottom, bottomContentInset)
             }
-            .padding(.horizontal, LayoutMetrics.horizontalPadding)
-            .padding(.top, 10)
         }
         .background(Color(uiColor: .systemBackground))
+    }
+
+    private var timeAxis: some View {
+        VStack(spacing: 3) {
+            ForEach(hours, id: \.self) { hour in
+                Text("\(hour)시")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: LayoutMetrics.timeAxisWidth, height: rowHeight - 3, alignment: .trailing)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.9)
+            }
+        }
+        .frame(width: LayoutMetrics.timeAxisWidth, height: gridHeight, alignment: .topTrailing)
+    }
+
+    private func gridBackground(width: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(workStartHour..<workEndHour, id: \.self) { hour in
+                let cellHeight = rowHeight - 3
+
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(Color(uiColor: .systemGray6).opacity(0.72))
+                    .frame(width: width, height: cellHeight)
+                    .position(
+                        x: width / 2,
+                        y: yCenter(for: hour, height: cellHeight)
+                    )
+            }
+        }
+        .frame(width: width, height: gridHeight, alignment: .topLeading)
+    }
+
+    private func confirmedMeetingBlock(width: CGFloat) -> some View {
+        let height = rowHeight - 3
+        let tint = meeting.iconTint
+
+        return HStack(spacing: 12) {
+            Image(systemName: meeting.iconName)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 34, height: 34)
+                .background(tint.opacity(0.12), in: Circle())
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(meeting.title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Text("\(meeting.timeRange) · \(meetingPlaceText)")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+            }
+            .layoutPriority(1)
+
+            Spacer(minLength: 4)
+
+            AvatarStack(
+                names: meeting.memberInitials,
+                maxVisible: 3,
+                size: 24,
+                borderColor: Color(uiColor: .systemBackground),
+                borderWidth: 1.8,
+                overlap: 8
+            )
+
+            Text("\(meeting.memberCount)명")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .monospacedDigit()
+        }
+        .padding(.horizontal, 12)
+        .frame(width: width, height: height)
+        .background(
+            tint.opacity(0.09),
+            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(tint.opacity(0.22), lineWidth: 0.8)
+        }
+        .position(
+            x: width / 2,
+            y: yCenter(for: confirmedStartHour, height: height)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(meeting.title), \(meeting.timeRange), 참석자 \(meeting.memberCount)명")
+    }
+
+    private var displayedDate: Date {
+        selectedDate ?? meeting.focusDate
+    }
+
+    private var isMeetingDate: Bool {
+        calendar.isDate(displayedDate, inSameDayAs: meeting.focusDate)
+    }
+
+    private var confirmedStartHour: Int {
+        let firstComponent = meeting.timeRange
+            .components(separatedBy: "-")
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: ":")
+            .first
+
+        return min(max(Int(firstComponent ?? "") ?? workStartHour, workStartHour), workEndHour - 1)
+    }
+
+    private var meetingPlaceText: String {
+        let components = meeting.subtitle
+            .components(separatedBy: " · ")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        guard let modeIndex = components.firstIndex(where: { $0 == "온라인" || $0 == "오프라인" }) else {
+            return meeting.sectionName
+        }
+
+        let locationIndex = components.index(after: modeIndex)
+        return locationIndex < components.endIndex ? components[locationIndex] : components[modeIndex]
+    }
+
+    private var gridHeight: CGFloat {
+        CGFloat(hours.count) * rowHeight
+    }
+
+    private func yCenter(for hour: Int, height: CGFloat) -> CGFloat {
+        CGFloat(hour - workStartHour) * rowHeight + height / 2
     }
 }
 
@@ -9208,6 +9454,7 @@ private struct CreateMeetingSheet: View {
             title: sanitizedTitle(for: meetingInfo).isEmpty ? "새 회의" : sanitizedTitle(for: meetingInfo),
             detail: meetingInfo.detail,
             sectionName: meetingInfo.sectionName,
+            iconName: meetingInfo.iconName,
             meetingMode: meetingInfo.meetingMode,
             location: meetingInfo.location,
             startDate: startDate,
@@ -12119,6 +12366,7 @@ private struct MeetingDraft {
     let title: String
     let detail: String
     let sectionName: String
+    let iconName: String
     let meetingMode: MeetingMode
     let location: String
     let startDate: Date
@@ -12912,6 +13160,7 @@ private struct HomeMeeting: Identifiable {
     let id: String
     let title: String
     let sectionName: String
+    let iconName: String
     let subtitle: String
     let dateRange: String
     let timeRange: String
@@ -12942,6 +13191,10 @@ private struct HomeMeeting: Identifiable {
         return Double(respondedCount) / Double(memberCount)
     }
 
+    var iconTint: Color {
+        MeetingIconStyle.tint(for: iconName)
+    }
+
     func sharedWithMembers(hostAvailabilityEntries: [AvailabilitySlot: AvailabilityEntry]) -> HomeMeeting {
         let normalizedMembers = Self.prototypeSixMembers(from: memberInitials)
         let normalizedRequiredIndexes = Self.normalizedRequiredIndexes(
@@ -12953,6 +13206,7 @@ private struct HomeMeeting: Identifiable {
             id: id,
             title: title,
             sectionName: sectionName,
+            iconName: iconName,
             subtitle: subtitle,
             dateRange: dateRange,
             timeRange: timeRange,
@@ -12978,6 +13232,7 @@ private struct HomeMeeting: Identifiable {
             id: id,
             title: title,
             sectionName: sectionName,
+            iconName: iconName,
             subtitle: subtitle,
             dateRange: dateRange,
             timeRange: timeRange,
@@ -13010,6 +13265,7 @@ private struct HomeMeeting: Identifiable {
             id: id,
             title: title,
             sectionName: sectionName,
+            iconName: iconName,
             subtitle: subtitle,
             dateRange: "\(month)월 \(day)일",
             timeRange: confirmedTimeRange,
@@ -13051,6 +13307,7 @@ private struct HomeMeeting: Identifiable {
             id: "design-team-weekly",
             title: "디자인팀 회의",
             sectionName: "디자인팀",
+            iconName: "paintpalette.fill",
             subtitle: "제품 방향성, IA, 화면 우선순위",
             dateRange: "7월 15일 - 18일",
             timeRange: "10:00 - 17:00",
@@ -13073,6 +13330,7 @@ private struct HomeMeeting: Identifiable {
             id: "product-review",
             title: "제품 리뷰",
             sectionName: "제품팀",
+            iconName: "checklist",
             subtitle: "MVP 범위 점검",
             dateRange: "7월 16일 - 17일",
             timeRange: "14:00 - 16:00",
@@ -13095,6 +13353,7 @@ private struct HomeMeeting: Identifiable {
             id: "research-sync",
             title: "리서치 싱크",
             sectionName: "리서치",
+            iconName: "bubble.left.and.bubble.right.fill",
             subtitle: "인터뷰 결과 공유",
             dateRange: "7월 21일 - 22일",
             timeRange: "09:00 - 12:00",
@@ -13117,6 +13376,7 @@ private struct HomeMeeting: Identifiable {
             id: "brand-check",
             title: "브랜드 체크인",
             sectionName: "브랜드",
+            iconName: "sparkles",
             subtitle: "가이드라인 확정",
             dateRange: "7월 14일",
             timeRange: "11:00 - 12:00",
@@ -13222,6 +13482,9 @@ private struct ExpandableCalendarView: View {
     @Binding var selectedDate: Date?
     let rangeStartDate: Date
     let rangeEndDate: Date
+    let showsDateRange: Bool
+    let eventDates: [Date]
+    let eventTint: Color
     let expansionProgress: CGFloat
     let calendar: Calendar
 
@@ -13232,6 +13495,9 @@ private struct ExpandableCalendarView: View {
                 selectedDate: $selectedDate,
                 rangeStartDate: rangeStartDate,
                 rangeEndDate: rangeEndDate,
+                showsDateRange: showsDateRange,
+                eventDates: eventDates,
+                eventTint: eventTint,
                 calendar: calendar
             )
             .opacity(expansionProgress)
@@ -13243,6 +13509,9 @@ private struct ExpandableCalendarView: View {
                 selectedDate: $selectedDate,
                 rangeStartDate: rangeStartDate,
                 rangeEndDate: rangeEndDate,
+                showsDateRange: showsDateRange,
+                eventDates: eventDates,
+                eventTint: eventTint,
                 calendar: calendar
             )
             .opacity(1 - expansionProgress)
@@ -13260,6 +13529,9 @@ private struct MonthCalendarView: View {
     @Binding var selectedDate: Date?
     let rangeStartDate: Date
     let rangeEndDate: Date
+    let showsDateRange: Bool
+    let eventDates: [Date]
+    let eventTint: Color
     let calendar: Calendar
 
     var body: some View {
@@ -13285,6 +13557,8 @@ private struct MonthCalendarView: View {
                             isWeekEnd: isWeekEnd(day.date),
                             continuesFromPreviousWeek: continuesFromPreviousWeek(day.date),
                             continuesToNextWeek: continuesToNextWeek(day.date),
+                            hasEvent: hasEvent(on: day.date),
+                            eventTint: eventTint,
                             calendar: calendar
                         )
                     }
@@ -13355,16 +13629,24 @@ private struct MonthCalendarView: View {
     }
 
     private func isRangeStart(_ date: Date) -> Bool {
-        calendar.isDate(date, inSameDayAs: normalizedRangeStartDate)
+        showsDateRange && calendar.isDate(date, inSameDayAs: normalizedRangeStartDate)
     }
 
     private func isRangeEnd(_ date: Date) -> Bool {
-        calendar.isDate(date, inSameDayAs: normalizedRangeEndDate)
+        showsDateRange && calendar.isDate(date, inSameDayAs: normalizedRangeEndDate)
     }
 
     private func isInRange(_ date: Date) -> Bool {
+        guard showsDateRange else {
+            return false
+        }
+
         let normalizedDate = calendar.startOfDay(for: date)
         return normalizedDate >= normalizedRangeStartDate && normalizedDate <= normalizedRangeEndDate
+    }
+
+    private func hasEvent(on date: Date) -> Bool {
+        eventDates.contains { calendar.isDate($0, inSameDayAs: date) }
     }
 
     private func isWeekStart(_ date: Date) -> Bool {
@@ -13400,6 +13682,9 @@ private struct WeekStripView: View {
     @Binding var selectedDate: Date?
     let rangeStartDate: Date
     let rangeEndDate: Date
+    let showsDateRange: Bool
+    let eventDates: [Date]
+    let eventTint: Color
     let calendar: Calendar
 
     var body: some View {
@@ -13425,6 +13710,8 @@ private struct WeekStripView: View {
                             isWeekEnd: isWeekEnd(date),
                             continuesFromPreviousWeek: continuesFromPreviousWeek(date),
                             continuesToNextWeek: continuesToNextWeek(date),
+                            hasEvent: hasEvent(on: date),
+                            eventTint: eventTint,
                             calendar: calendar
                         )
                     }
@@ -13480,16 +13767,24 @@ private struct WeekStripView: View {
     }
 
     private func isRangeStart(_ date: Date) -> Bool {
-        calendar.isDate(date, inSameDayAs: normalizedRangeStartDate)
+        showsDateRange && calendar.isDate(date, inSameDayAs: normalizedRangeStartDate)
     }
 
     private func isRangeEnd(_ date: Date) -> Bool {
-        calendar.isDate(date, inSameDayAs: normalizedRangeEndDate)
+        showsDateRange && calendar.isDate(date, inSameDayAs: normalizedRangeEndDate)
     }
 
     private func isInRange(_ date: Date) -> Bool {
+        guard showsDateRange else {
+            return false
+        }
+
         let normalizedDate = calendar.startOfDay(for: date)
         return normalizedDate >= normalizedRangeStartDate && normalizedDate <= normalizedRangeEndDate
+    }
+
+    private func hasEvent(on date: Date) -> Bool {
+        eventDates.contains { calendar.isDate($0, inSameDayAs: date) }
     }
 
     private func isWeekStart(_ date: Date) -> Bool {
@@ -13532,6 +13827,8 @@ private struct CalendarDayCell: View {
     let isWeekEnd: Bool
     let continuesFromPreviousWeek: Bool
     let continuesToNextWeek: Bool
+    let hasEvent: Bool
+    let eventTint: Color
     let calendar: Calendar
 
     var body: some View {
@@ -13543,6 +13840,13 @@ private struct CalendarDayCell: View {
                 .frame(width: LayoutMetrics.calendarDayCellSize, height: LayoutMetrics.calendarDayCellSize)
                 .foregroundStyle(foregroundStyle)
                 .background(endpointBackground, in: Circle())
+
+            if hasEvent {
+                Circle()
+                    .fill(isEmphasized ? Color.white : eventTint)
+                    .frame(width: 4, height: 4)
+                    .offset(y: 14)
+            }
         }
             .frame(maxWidth: .infinity)
             .frame(height: LayoutMetrics.calendarDayCellSize)
