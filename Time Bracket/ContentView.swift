@@ -388,6 +388,9 @@ private struct CalendarScreen: View {
     @State private var isDerivationTransitionActive = false
     @State private var suppressInitialTeamResponseReveal = false
     @State private var isTeamResponseRevealComplete = true
+    @State private var isConfirmedMeetingDetailPresented = false
+    @State private var isConfirmedMeetingTransitioning = false
+    @Namespace private var confirmedMeetingNamespace
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -472,7 +475,20 @@ private struct CalendarScreen: View {
                                         meeting: meeting,
                                         rowHeight: scheduleRowHeight,
                                         bottomContentInset: toolbarReservedInset,
-                                        calendar: calendar
+                                        calendar: calendar,
+                                        namespace: confirmedMeetingNamespace,
+                                        isDetailPresented: isConfirmedMeetingDetailPresented,
+                                        isTransitioning: isConfirmedMeetingTransitioning,
+                                        onShowDetail: {
+                                            withAnimation(.easeOut(duration: 0.1)) {
+                                                isConfirmedMeetingTransitioning = true
+                                            }
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                                                withAnimation(.spring(response: 0.5, dampingFraction: 0.92, blendDuration: 0.08)) {
+                                                    isConfirmedMeetingDetailPresented = true
+                                                }
+                                            }
+                                        }
                                     )
                                 } else {
                                     ScheduleGridView(
@@ -560,8 +576,27 @@ private struct CalendarScreen: View {
                     .transition(.opacity.animation(.easeInOut(duration: 0.22)))
                     .zIndex(10)
             }
+
+            if isConfirmedCalendar && isConfirmedMeetingDetailPresented {
+                ConfirmedMeetingDetailOverlay(
+                    meeting: meeting,
+                    namespace: confirmedMeetingNamespace,
+                    onDismiss: {
+                        withAnimation(.spring(response: 0.48, dampingFraction: 0.93, blendDuration: 0.08)) {
+                            isConfirmedMeetingDetailPresented = false
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.36) {
+                            withAnimation(.easeIn(duration: 0.16)) {
+                                isConfirmedMeetingTransitioning = false
+                            }
+                        }
+                    }
+                )
+                .zIndex(20)
+            }
         }
         .background(Color(uiColor: .systemBackground))
+        .ignoresSafeArea(.container, edges: isConfirmedCalendar ? .bottom : [])
         .sheet(item: $reasonDraft) { draft in
             AvailabilityReasonSheet(
                 draft: draft,
@@ -4714,7 +4749,7 @@ private struct MeetingConfirmationSuccessView: View {
     }
 
     private var confirmedPlaceSymbolName: String {
-        confirmedPlaceText == "온라인" ? "video.fill" : "mappin.and.ellipse"
+        "location.fill"
     }
 
     private var confirmedMetaText: String {
@@ -5804,7 +5839,7 @@ private struct FinalCandidateDetailSheet: View {
         HStack(alignment: .center, spacing: 10) {
             Image(systemName: insight.symbolName)
                 .font(.system(size: 13, weight: .semibold))
-                .symbolRenderingMode(.hierarchical)
+                .symbolRenderingMode(.monochrome)
                 .foregroundStyle(insight.color)
                 .frame(width: 28, height: 28)
                 .background(insight.color.opacity(0.1), in: Circle())
@@ -8294,6 +8329,10 @@ private struct ConfirmedDayScheduleView: View {
     let rowHeight: CGFloat
     let bottomContentInset: CGFloat
     let calendar: Calendar
+    let namespace: Namespace.ID
+    let isDetailPresented: Bool
+    let isTransitioning: Bool
+    let onShowDetail: () -> Void
 
     private let hours = Array(9..<18)
     private let workStartHour = 9
@@ -8316,7 +8355,7 @@ private struct ConfirmedDayScheduleView: View {
                         ZStack(alignment: .topLeading) {
                             gridBackground(width: timelineWidth)
 
-                            if isMeetingDate {
+                            if isMeetingDate && !isDetailPresented {
                                 confirmedMeetingBlock(width: timelineWidth)
                             }
                         }
@@ -8325,6 +8364,7 @@ private struct ConfirmedDayScheduleView: View {
                 }
                 .frame(width: contentWidth, alignment: .leading)
                 .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                .padding(.top, 10)
                 .padding(.bottom, bottomContentInset)
             }
         }
@@ -8366,54 +8406,65 @@ private struct ConfirmedDayScheduleView: View {
         let height = rowHeight - 3
         let tint = meeting.iconTint
 
-        return HStack(spacing: 12) {
-            Image(systemName: meeting.iconName)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(tint)
-                .frame(width: 34, height: 34)
-                .background(tint.opacity(0.12), in: Circle())
+        return Button(action: onShowDetail) {
+            HStack(spacing: 12) {
+                Image(systemName: meeting.iconName)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 34, height: 34)
+                    .background(tint.opacity(0.12), in: Circle())
+                    .matchedGeometryEffect(
+                        id: "confirmed-meeting-\(meeting.id)-icon",
+                        in: namespace
+                    )
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(meeting.title)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(meeting.title)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .matchedGeometryEffect(
+                            id: "confirmed-meeting-\(meeting.id)-title",
+                            in: namespace
+                        )
 
-                Text("\(meeting.timeRange) · \(meetingPlaceText)")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
+                    Text("\(meeting.timeRange) · \(meetingPlaceText)")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                        .opacity(isTransitioning ? 0 : 1)
+                }
+                .layoutPriority(1)
+
+                Spacer(minLength: 4)
+
+                AvatarStack(
+                    names: meeting.memberInitials,
+                    maxVisible: 3,
+                    size: 24,
+                    borderColor: Color(uiColor: .systemBackground),
+                    borderWidth: 1.8,
+                    overlap: 8
+                )
+                .opacity(isTransitioning ? 0 : 1)
             }
-            .layoutPriority(1)
-
-            Spacer(minLength: 4)
-
-            AvatarStack(
-                names: meeting.memberInitials,
-                maxVisible: 3,
-                size: 24,
-                borderColor: Color(uiColor: .systemBackground),
-                borderWidth: 1.8,
-                overlap: 8
-            )
-
-            Text("\(meeting.memberCount)명")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .monospacedDigit()
+            .padding(.horizontal, 12)
+            .frame(width: max(width - 2, 0), height: height)
+            .background {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(tint.opacity(0.09))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .stroke(tint.opacity(0.22), lineWidth: 0.8)
+                    }
+                    .matchedGeometryEffect(
+                        id: "confirmed-meeting-\(meeting.id)-surface",
+                        in: namespace
+                    )
+            }
         }
-        .padding(.horizontal, 12)
-        .frame(width: width, height: height)
-        .background(
-            tint.opacity(0.09),
-            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(tint.opacity(0.22), lineWidth: 0.8)
-        }
+        .buttonStyle(.plain)
         .position(
             x: width / 2,
             y: yCenter(for: confirmedStartHour, height: height)
@@ -8461,6 +8512,281 @@ private struct ConfirmedDayScheduleView: View {
 
     private func yCenter(for hour: Int, height: CGFloat) -> CGFloat {
         CGFloat(hour - workStartHour) * rowHeight + height / 2
+    }
+}
+
+private struct ConfirmedMeetingDetailOverlay: View {
+    let meeting: HomeMeeting
+    let namespace: Namespace.ID
+    let onDismiss: () -> Void
+
+    @State private var showsDetails = false
+    @State private var isDismissing = false
+
+    private var tint: Color {
+        meeting.iconTint
+    }
+
+    var body: some View {
+        ZStack {
+            Button(action: dismissDetail) {
+                Color.black.opacity(showsDetails ? 0.12 : 0)
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .transition(.opacity)
+
+            VStack(alignment: .leading, spacing: 16) {
+                detailHeader
+
+                Group {
+                    Divider()
+
+                    VStack(spacing: 13) {
+                        detailRow(
+                            symbolName: "calendar",
+                            title: "일정",
+                            value: confirmedDateText,
+                            iconTint: Color(uiColor: .systemBlue)
+                        )
+                        detailRow(
+                            symbolName: "clock.fill",
+                            title: "시간",
+                            value: meeting.timeRange,
+                            iconTint: Color(uiColor: .systemIndigo)
+                        )
+                        detailRow(
+                            symbolName: "location.fill",
+                            title: "장소",
+                            value: locationSummary,
+                            iconTint: Color(uiColor: .systemTeal)
+                        )
+                    }
+
+                    if !meetingDetailText.isEmpty {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("회의 내용")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(.secondary)
+
+                            Text(meetingDetailText)
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.primary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+
+                    Divider()
+
+                    participantSection
+                }
+                .opacity(showsDetails ? 1 : 0)
+                .offset(y: showsDetails ? 0 : 8)
+            }
+            .padding(18)
+            .frame(maxWidth: 360, alignment: .leading)
+            .background {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(Color(uiColor: .systemBackground))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .stroke(tint.opacity(0.16), lineWidth: 0.8)
+                    }
+                    .matchedGeometryEffect(
+                        id: "confirmed-meeting-\(meeting.id)-surface",
+                        in: namespace
+                    )
+            }
+            .shadow(color: Color.black.opacity(showsDetails ? 0.12 : 0), radius: 24, y: 10)
+            .padding(.horizontal, LayoutMetrics.horizontalPadding)
+            .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        }
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                withAnimation(.easeOut(duration: 0.26)) {
+                    showsDetails = true
+                }
+            }
+        }
+    }
+
+    private var detailHeader: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: meeting.iconName)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 34, height: 34)
+                .background(tint.opacity(0.12), in: Circle())
+                .matchedGeometryEffect(
+                    id: "confirmed-meeting-\(meeting.id)-icon",
+                    in: namespace
+                )
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(meeting.title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .matchedGeometryEffect(
+                        id: "confirmed-meeting-\(meeting.id)-title",
+                        in: namespace
+                    )
+
+                Text(meeting.sectionName)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .opacity(showsDetails ? 1 : 0)
+            }
+
+            Spacer(minLength: 8)
+
+            Button(action: dismissDetail) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 24, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(Color(uiColor: .secondaryLabel))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("닫기")
+            .opacity(showsDetails ? 1 : 0)
+        }
+    }
+
+    private func dismissDetail() {
+        guard !isDismissing else {
+            return
+        }
+
+        isDismissing = true
+        withAnimation(.easeIn(duration: 0.12)) {
+            showsDetails = false
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.11) {
+            onDismiss()
+        }
+    }
+
+    private func detailRow(symbolName: String, title: String, value: String, iconTint: Color) -> some View {
+        HStack(alignment: .center, spacing: 11) {
+            Image(systemName: symbolName)
+                .font(.system(size: 13, weight: .semibold))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(iconTint)
+                .frame(width: 28, height: 28)
+                .background(iconTint.opacity(0.1), in: Circle())
+
+            Text(title)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            Spacer(minLength: 8)
+
+            Text(value)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+        }
+    }
+
+    private var participantSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("참석자")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                Spacer(minLength: 8)
+
+                Text("\(meeting.memberCount)명")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+
+            LazyVGrid(columns: participantColumns, spacing: 8) {
+                ForEach(meeting.memberInitials.indices, id: \.self) { index in
+                    participantCell(name: meeting.memberInitials[index], index: index)
+                }
+            }
+        }
+    }
+
+    private var participantColumns: [GridItem] {
+        [
+            GridItem(.flexible(), spacing: 8, alignment: .leading),
+            GridItem(.flexible(), spacing: 8, alignment: .leading)
+        ]
+    }
+
+    private func participantCell(name: String, index: Int) -> some View {
+        HStack(spacing: 8) {
+            ProfileAvatar(
+                name: name,
+                fallback: ProfileAsset.fallbackText(for: name),
+                size: 30,
+                tint: tint
+            )
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(name)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Text(meeting.isRequiredMember(at: index) ? "필참" : "선택")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 44)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var confirmedDateText: String {
+        let month = Calendar.current.component(.month, from: meeting.focusDate)
+        return "\(month)월 \(meeting.confirmedDay)일 (\(meeting.confirmedWeekday))"
+    }
+
+    private var locationSummary: String {
+        let mode = subtitleComponents.first { $0 == "온라인" || $0 == "오프라인" }
+        let location = meetingPlaceText
+
+        guard let mode, mode != location else {
+            return location
+        }
+
+        return "\(mode) · \(location)"
+    }
+
+    private var meetingDetailText: String {
+        let ignoredValues = Set([meeting.sectionName, "온라인", "오프라인", meetingPlaceText])
+        return subtitleComponents.first { !ignoredValues.contains($0) } ?? ""
+    }
+
+    private var meetingPlaceText: String {
+        guard let modeIndex = subtitleComponents.firstIndex(where: { $0 == "온라인" || $0 == "오프라인" }) else {
+            return meeting.sectionName
+        }
+
+        let locationIndex = subtitleComponents.index(after: modeIndex)
+        return locationIndex < subtitleComponents.endIndex ? subtitleComponents[locationIndex] : subtitleComponents[modeIndex]
+    }
+
+    private var subtitleComponents: [String] {
+        meeting.subtitle
+            .components(separatedBy: " · ")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 }
 
@@ -12589,34 +12915,139 @@ private struct HomeView: View {
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: HomeGridMetrics.gap) {
-                NewMeetingCard(onCreate: onCreateMeeting)
+            Grid(horizontalSpacing: HomeGridMetrics.gap, verticalSpacing: HomeGridMetrics.gap) {
+                HomeCreateMeetingTile(onCreate: onCreateMeeting)
+                    .gridCellColumns(2)
 
-                HomeSummaryBlock(meetings: meetings)
+                GridRow {
+                    HomeCountTile(
+                        title: "조율 중",
+                        value: activeMeetings.count,
+                        detail: activeCountDetail,
+                        symbolName: "calendar.badge.clock",
+                        tint: Color(uiColor: .systemBlue)
+                    )
 
-                MeetingGroupBlock(
-                    meetings: meetings.filter { $0.status != .confirmed },
-                    selectedMeeting: selectedMeeting,
-                    onSelectMeeting: onSelectMeeting
-                )
+                    HomeCountTile(
+                        title: "확정",
+                        value: confirmedMeetings.count,
+                        detail: confirmedCountDetail,
+                        symbolName: "checkmark.seal.fill",
+                        tint: Color(uiColor: .systemGreen)
+                    )
+                }
 
-                HomeTimelineCard(meetings: meetings)
+                Group {
+                    if let activeMeeting = priorityActiveMeeting {
+                        HomeNextActionTile(
+                            meeting: activeMeeting,
+                            onSelect: { onSelectMeeting(activeMeeting) }
+                        )
+                    } else if let confirmedMeeting = priorityConfirmedMeeting {
+                        HomeConfirmedMeetingTile(
+                            meeting: confirmedMeeting,
+                            onSelect: { onSelectMeeting(confirmedMeeting) }
+                        )
+                    } else {
+                        HomeWeekEmptyTile()
+                    }
+                }
+                .id(primaryTileID)
+                .gridCellColumns(2)
+                .transition(.opacity.combined(with: .scale(scale: 0.985)))
+
+                GridRow {
+                    HomeRecentTeamTile()
+                    HomeDefaultHoursTile()
+                }
+
+                if secondaryActiveMeetings.count > 0 {
+                    HomeActiveMeetingListTile(
+                        meetings: secondaryActiveMeetings,
+                        selectedMeetingID: selectedMeeting?.id,
+                        onSelectMeeting: onSelectMeeting
+                    )
+                    .gridCellColumns(2)
+                }
             }
             .padding(.horizontal, LayoutMetrics.horizontalPadding)
             .padding(.top, HomeGridMetrics.topPadding)
-            .padding(.bottom, 88)
+            .padding(.bottom, 96)
+            .animation(.spring(response: 0.42, dampingFraction: 0.9), value: homeStateKey)
         }
         .background(Color(uiColor: .systemBackground))
+    }
+
+    private var activeMeetings: [HomeMeeting] {
+        meetings.filter { $0.status != .confirmed }
+    }
+
+    private var confirmedMeetings: [HomeMeeting] {
+        meetings.filter { $0.status == .confirmed }
+    }
+
+    private var priorityActiveMeeting: HomeMeeting? {
+        if let selectedMeeting, selectedMeeting.status != .confirmed {
+            return selectedMeeting
+        }
+
+        return activeMeetings.first
+    }
+
+    private var priorityConfirmedMeeting: HomeMeeting? {
+        if let selectedMeeting, selectedMeeting.status == .confirmed {
+            return selectedMeeting
+        }
+
+        return confirmedMeetings.first
+    }
+
+    private var secondaryActiveMeetings: [HomeMeeting] {
+        guard let priorityActiveMeeting else {
+            return activeMeetings
+        }
+
+        return activeMeetings.filter { $0.id != priorityActiveMeeting.id }
+    }
+
+    private var activeCountDetail: String {
+        guard !activeMeetings.isEmpty else {
+            return "진행 없음"
+        }
+
+        let inputCount = activeMeetings.filter { $0.status == .waiting }.count
+        return inputCount > 0 ? "입력 필요 \(inputCount)" : "응답 확인"
+    }
+
+    private var confirmedCountDetail: String {
+        confirmedMeetings.isEmpty ? "예정 없음" : "캘린더 반영"
+    }
+
+    private var primaryTileID: String {
+        if let priorityActiveMeeting {
+            return "active-\(priorityActiveMeeting.id)-\(priorityActiveMeeting.status.title)"
+        }
+
+        if let priorityConfirmedMeeting {
+            return "confirmed-\(priorityConfirmedMeeting.id)"
+        }
+
+        return "empty-home"
+    }
+
+    private var homeStateKey: String {
+        meetings.map { "\($0.id)-\($0.status.title)-\($0.respondedCount)" }.joined(separator: "|")
     }
 }
 
 private enum HomeGridMetrics {
-    static let gap: CGFloat = 10
-    static let cornerRadius: CGFloat = 18
-    static let cardPadding: CGFloat = 14
-    static let singleHeight: CGFloat = 156
-    static let wideHeight: CGFloat = 156
-    static let featureHeight: CGFloat = 184
+    static let gap: CGFloat = 12
+    static let cornerRadius: CGFloat = 20
+    static let cardPadding: CGFloat = 16
+    static let createHeight: CGFloat = 82
+    static let countHeight: CGFloat = 132
+    static let featureHeight: CGFloat = 198
+    static let compactHeight: CGFloat = 152
     static let topPadding: CGFloat = 8
 
     static var cardShape: RoundedRectangle {
@@ -12624,275 +13055,327 @@ private enum HomeGridMetrics {
     }
 }
 
-private struct HomeSummaryBlock: View {
-    let meetings: [HomeMeeting]
-
-    var body: some View {
-        HStack(spacing: HomeGridMetrics.gap) {
-            HomeMetricCard(
-                title: "조율 중",
-                value: "\(meetings.filter { $0.status != .confirmed }.count)",
-                detail: "내가 만든 회의",
-                symbolName: "calendar.badge.clock",
-                tint: Color(uiColor: .systemBlue)
-            )
-
-            HomeMetricCard(
-                title: "입력 필요",
-                value: "\(meetings.filter { $0.status == .waiting }.count)",
-                detail: "초대받은 회의",
-                symbolName: "pencil.and.list.clipboard",
-                tint: Color(uiColor: .systemOrange)
-            )
-        }
-    }
-}
-
-private struct MeetingGroupBlock: View {
-    let meetings: [HomeMeeting]
-    let selectedMeeting: HomeMeeting?
-    let onSelectMeeting: (HomeMeeting) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("진행 중인 조율")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.primary)
-
-                    Text("응답 상태와 다음 액션")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                Text("\(meetings.count)")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 30, height: 30)
-                    .background(Color(uiColor: .systemBackground), in: Circle())
-            }
-            .padding(.bottom, 12)
-
-            if meetings.isEmpty {
-                EmptyMeetingRowsView()
-            } else {
-                ForEach(Array(meetings.enumerated()), id: \.element.id) { index, meeting in
-                    MeetingRowCard(
-                        meeting: meeting,
-                        isSelected: meeting.id == selectedMeeting?.id,
-                        onSelect: {
-                            onSelectMeeting(meeting)
-                        }
-                    )
-
-                    if index < meetings.count - 1 {
-                        Divider()
-                            .padding(.leading, 48)
-                    }
-                }
-            }
-        }
-        .padding(HomeGridMetrics.cardPadding)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(Color(uiColor: .secondarySystemBackground), in: HomeGridMetrics.cardShape)
-    }
-}
-
-private struct EmptyMeetingRowsView: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("진행 중인 조율이 없습니다")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(.primary)
-
-            Text("새 회의 조율을 만들면 여기에 바로 추가됩니다.")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
-        .padding(.horizontal, 2)
-    }
-}
-
-private struct MeetingRowCard: View {
-    let meeting: HomeMeeting
-    let isSelected: Bool
-    let onSelect: () -> Void
-
-    var body: some View {
-        Button(action: onSelect) {
-            HStack(spacing: 12) {
-                ResponseProgressView(progress: meeting.responseProgress)
-                    .frame(width: 38, height: 38)
-                    .scaleEffect(0.72)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(meeting.title)
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-
-                        StatusPill(status: meeting.status)
-                            .scaleEffect(0.9, anchor: .leading)
-                    }
-
-                    Text("\(meeting.dateRange) · \(meeting.timeRange)")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 8)
-
-                VStack(alignment: .trailing, spacing: 6) {
-                    AvatarStack(names: meeting.memberInitials, maxVisible: 3)
-
-                    Text("\(meeting.respondedCount)/\(meeting.memberCount)")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(height: 64)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .background(isSelected ? Color(uiColor: .systemBackground).opacity(0.72) : Color.clear, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-    }
-}
-
-private struct NewMeetingCard: View {
+private struct HomeCreateMeetingTile: View {
     let onCreate: () -> Void
 
     var body: some View {
         Button(action: onCreate) {
-            HStack(spacing: 12) {
-                Image(systemName: "plus.circle.fill")
-                    .font(.system(size: 29, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .frame(width: 36, height: 36)
+            HStack(spacing: 13) {
+                Image(systemName: "plus")
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 38, height: 38)
+                    .background(Color(uiColor: .systemBlue), in: Circle())
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text("새 회의 조율")
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(.primary)
 
-                    Text("후보 일정, 시간, 멤버 초대")
+                    Text("일정 · 시간 · 참석자 설정")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
 
-                Spacer()
+                Spacer(minLength: 8)
 
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.tertiary)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color(uiColor: .tertiaryLabel))
             }
             .padding(.horizontal, HomeGridMetrics.cardPadding)
-            .frame(maxWidth: .infinity, minHeight: 76, maxHeight: 76, alignment: .leading)
-            .background(.regularMaterial, in: HomeGridMetrics.cardShape)
+            .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.createHeight, maxHeight: HomeGridMetrics.createHeight)
+            .background(Color(uiColor: .secondarySystemBackground), in: HomeGridMetrics.cardShape)
             .contentShape(HomeGridMetrics.cardShape)
-            .overlay {
-                HomeGridMetrics.cardShape
-                    .stroke(Color(uiColor: .separator).opacity(0.18), lineWidth: 0.8)
-            }
         }
         .buttonStyle(.plain)
     }
 }
 
-private struct HomeMetricCard: View {
+private struct HomeCountTile: View {
     let title: String
-    let value: String
+    let value: Int
     let detail: String
     let symbolName: String
     let tint: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Image(systemName: symbolName)
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(tint)
-                .frame(width: 30, height: 30)
-                .background(tint.opacity(0.12), in: Circle())
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Image(systemName: symbolName)
+                    .font(.system(size: 15, weight: .semibold))
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundStyle(tint)
+                    .frame(width: 30, height: 30)
+                    .background(tint.opacity(0.11), in: Circle())
 
-            Spacer(minLength: 0)
+                Spacer(minLength: 0)
 
-            Text(value)
-                .font(.system(size: 30, weight: .semibold))
-                .foregroundStyle(.primary)
-                .contentTransition(.numericText())
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 14, weight: .semibold))
+                Text("\(value)")
+                    .font(.system(size: 27, weight: .semibold))
                     .foregroundStyle(.primary)
-
-                Text(detail)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
             }
+
+            Spacer(minLength: 8)
+
+            Text(title)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.primary)
+
+            Text(detail)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .padding(.top, 2)
         }
         .padding(HomeGridMetrics.cardPadding)
-        .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.singleHeight, maxHeight: HomeGridMetrics.singleHeight, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.countHeight, maxHeight: HomeGridMetrics.countHeight, alignment: .leading)
         .background(Color(uiColor: .secondarySystemBackground), in: HomeGridMetrics.cardShape)
     }
 }
 
-private struct FeaturedMeetingCard: View {
+private struct HomeNextActionTile: View {
     let meeting: HomeMeeting
+    let onSelect: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top) {
+        Button(action: onSelect) {
+            VStack(alignment: .leading, spacing: 15) {
+                HStack(alignment: .center, spacing: 10) {
+                    Image(systemName: meeting.iconName)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(meeting.iconTint)
+                        .frame(width: 38, height: 38)
+                        .background(meeting.iconTint.opacity(0.12), in: Circle())
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("다음 할 일")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.secondary)
+
+                        Text(meeting.homeActionTitle)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(meeting.iconTint)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    StatusPill(status: meeting.status)
+                }
+
                 VStack(alignment: .leading, spacing: 5) {
                     Text(meeting.title)
                         .font(.system(size: 21, weight: .semibold))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
 
-                    Text(meeting.subtitle)
+                    Text(meeting.homeActionDetail)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(2)
                 }
 
-                Spacer()
+                Spacer(minLength: 0)
 
-                StatusPill(status: meeting.status)
+                HStack(spacing: 10) {
+                    Label(meeting.dateRange, systemImage: "calendar")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+
+                    Spacer(minLength: 4)
+
+                    AvatarStack(
+                        names: meeting.memberInitials,
+                        maxVisible: 3,
+                        size: 27,
+                        borderColor: Color(uiColor: .secondarySystemBackground),
+                        borderWidth: 2,
+                        overlap: 8
+                    )
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Color(uiColor: .tertiaryLabel))
+                }
             }
-
-            HStack(spacing: 8) {
-                Label(meeting.dateRange, systemImage: "calendar")
-                Label(meeting.timeRange, systemImage: "clock")
+            .padding(HomeGridMetrics.cardPadding)
+            .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.featureHeight, maxHeight: HomeGridMetrics.featureHeight, alignment: .topLeading)
+            .background {
+                HomeGridMetrics.cardShape
+                    .fill(Color(uiColor: .secondarySystemBackground))
+                    .overlay {
+                        HomeGridMetrics.cardShape
+                            .fill(meeting.iconTint.opacity(0.035))
+                    }
             }
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .labelStyle(.titleAndIcon)
+            .contentShape(HomeGridMetrics.cardShape)
+        }
+        .buttonStyle(.plain)
+    }
+}
 
-            HStack(spacing: 12) {
-                ResponseProgressView(progress: meeting.responseProgress)
+private struct HomeConfirmedMeetingTile: View {
+    let meeting: HomeMeeting
+    let onSelect: () -> Void
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("\(meeting.respondedCount)명 응답")
-                        .font(.system(size: 16, weight: .semibold))
+    var body: some View {
+        Button(action: onSelect) {
+            VStack(alignment: .leading, spacing: 15) {
+                HStack {
+                    Label("다가오는 회의", systemImage: "checkmark.seal.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color(uiColor: .systemGreen))
+
+                    Spacer(minLength: 8)
+
+                    Text("확정")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color(uiColor: .systemGreen))
+                        .padding(.horizontal, 9)
+                        .frame(height: 25)
+                        .background(Color(uiColor: .systemGreen).opacity(0.11), in: Capsule())
+                }
+
+                HStack(alignment: .center, spacing: 14) {
+                    HomeDateTile(meeting: meeting)
+
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 7) {
+                            Image(systemName: meeting.iconName)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(meeting.iconTint)
+
+                            Text(meeting.title)
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                        }
+
+                        Text(meeting.timeRange)
+                            .font(.system(size: 15, weight: .semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(.primary)
+
+                        Label(meeting.homePlaceText, systemImage: "location.fill")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer(minLength: 0)
+
+                HStack {
+                    AvatarStack(
+                        names: meeting.memberInitials,
+                        maxVisible: 4,
+                        size: 28,
+                        borderColor: Color(uiColor: .secondarySystemBackground),
+                        borderWidth: 2,
+                        overlap: 8
+                    )
+
+                    Text("\(meeting.memberCount)명 참석")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+
+                    Spacer(minLength: 8)
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Color(uiColor: .tertiaryLabel))
+                }
+            }
+            .padding(HomeGridMetrics.cardPadding)
+            .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.featureHeight, maxHeight: HomeGridMetrics.featureHeight, alignment: .topLeading)
+            .background {
+                HomeGridMetrics.cardShape
+                    .fill(Color(uiColor: .secondarySystemBackground))
+                    .overlay {
+                        HomeGridMetrics.cardShape
+                            .fill(meeting.iconTint.opacity(0.035))
+                    }
+            }
+            .contentShape(HomeGridMetrics.cardShape)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct HomeDateTile: View {
+    let meeting: HomeMeeting
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Text(homeMonthText)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(meeting.iconTint)
+
+            Text(meeting.confirmedDay)
+                .font(.system(size: 27, weight: .semibold))
+                .foregroundStyle(.primary)
+                .monospacedDigit()
+
+            Text("\(meeting.confirmedWeekday)요일")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+        .frame(width: 68, height: 82)
+        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var homeMonthText: String {
+        "\(Calendar.current.component(.month, from: meeting.focusDate))월"
+    }
+}
+
+private struct HomeWeekEmptyTile: View {
+    private let weekdays = ["월", "화", "수", "목", "금"]
+    private let days = [13, 14, 15, 16, 17]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("이번 주")
+                        .font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(.primary)
-                        .lineLimit(1)
 
-                    Text("총 \(meeting.memberCount)명 중 \(meeting.remainingCount)명 남음")
+                    Text("예정된 회의가 없습니다")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
                 }
 
-                Spacer()
+                Spacer(minLength: 8)
 
-                AvatarStack(names: meeting.memberInitials)
+                Image(systemName: "calendar")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color(uiColor: .systemBlue))
+                    .frame(width: 34, height: 34)
+                    .background(Color(uiColor: .systemBlue).opacity(0.1), in: Circle())
+            }
+
+            Spacer(minLength: 0)
+
+            HStack(spacing: 0) {
+                ForEach(days.indices, id: \.self) { index in
+                    VStack(spacing: 7) {
+                        Text(weekdays[index])
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+
+                        Text("\(days[index])")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(index == 2 ? Color.white : Color.primary)
+                            .frame(width: 32, height: 32)
+                            .background(index == 2 ? Color(uiColor: .label) : Color.clear, in: Circle())
+                    }
+                    .frame(maxWidth: .infinity)
+                }
             }
         }
         .padding(HomeGridMetrics.cardPadding)
@@ -12901,92 +13384,198 @@ private struct FeaturedMeetingCard: View {
     }
 }
 
-private struct CompactMeetingCard: View {
-    let meeting: HomeMeeting
+private struct HomeRecentTeamTile: View {
+    private let names = ["김민준", "이서연", "오유진", "송승아", "박도윤"]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            StatusPill(status: meeting.status)
+        VStack(alignment: .leading, spacing: 0) {
+            Image(systemName: "person.3.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color(uiColor: .systemPurple))
+                .frame(width: 30, height: 30)
+                .background(Color(uiColor: .systemPurple).opacity(0.11), in: Circle())
 
-            Spacer(minLength: 0)
+            Spacer(minLength: 8)
 
-            Text(meeting.title)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-
-            Text(meeting.dateRange)
+            Text("최근 팀")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
 
+            Text("디자인팀")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.primary)
+                .padding(.top, 2)
+
             HStack {
-                AvatarStack(names: meeting.memberInitials, maxVisible: 3)
+                AvatarStack(
+                    names: names,
+                    maxVisible: 3,
+                    size: 25,
+                    borderColor: Color(uiColor: .secondarySystemBackground),
+                    borderWidth: 2,
+                    overlap: 8
+                )
 
-                Spacer()
+                Spacer(minLength: 4)
 
-                Text("\(meeting.respondedCount)/\(meeting.memberCount)")
-                    .font(.system(size: 13, weight: .semibold))
+                Text("5명")
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
+            .padding(.top, 9)
         }
         .padding(HomeGridMetrics.cardPadding)
-        .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.singleHeight, maxHeight: HomeGridMetrics.singleHeight, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.compactHeight, maxHeight: HomeGridMetrics.compactHeight, alignment: .leading)
         .background(Color(uiColor: .secondarySystemBackground), in: HomeGridMetrics.cardShape)
     }
 }
 
-private struct HomeTimelineCard: View {
+private struct HomeDefaultHoursTile: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Image(systemName: "clock.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color(uiColor: .systemIndigo))
+                .frame(width: 30, height: 30)
+                .background(Color(uiColor: .systemIndigo).opacity(0.11), in: Circle())
+
+            Spacer(minLength: 8)
+
+            Text("기본 시간")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            Text("09–18")
+                .font(.system(size: 22, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(.primary)
+                .padding(.top, 2)
+
+            Label("점심시간 제외", systemImage: "fork.knife")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .padding(.top, 9)
+        }
+        .padding(HomeGridMetrics.cardPadding)
+        .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.compactHeight, maxHeight: HomeGridMetrics.compactHeight, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemBackground), in: HomeGridMetrics.cardShape)
+    }
+}
+
+private struct HomeActiveMeetingListTile: View {
     let meetings: [HomeMeeting]
+    let selectedMeetingID: String?
+    let onSelectMeeting: (HomeMeeting) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("최근 확정")
-                    .font(.system(size: 18, weight: .semibold))
+                Text("다른 조율")
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(.primary)
 
-                Spacer()
+                Spacer(minLength: 8)
 
-                Text("이번 주")
+                Text("\(meetings.count)")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
+            .padding(.bottom, 8)
 
-            VStack(spacing: 12) {
-                ForEach(meetings.filter { $0.status == .confirmed }) { meeting in
-                    HStack(spacing: 12) {
-                        VStack(spacing: 2) {
-                            Text(meeting.confirmedDay)
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(.primary)
-
-                            Text(meeting.confirmedWeekday)
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                        }
-                        .frame(width: 42, height: 48)
-                        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            ForEach(Array(meetings.enumerated()), id: \.element.id) { index, meeting in
+                Button {
+                    onSelectMeeting(meeting)
+                } label: {
+                    HStack(spacing: 11) {
+                        Image(systemName: meeting.iconName)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(meeting.iconTint)
+                            .frame(width: 32, height: 32)
+                            .background(meeting.iconTint.opacity(0.1), in: Circle())
 
                         VStack(alignment: .leading, spacing: 3) {
                             Text(meeting.title)
-                                .font(.system(size: 15, weight: .semibold))
+                                .font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(.primary)
                                 .lineLimit(1)
 
-                            Text(meeting.timeRange)
+                            Text(meeting.homeActionTitle)
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
 
-                        Spacer()
+                        Spacer(minLength: 8)
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(Color(uiColor: .tertiaryLabel))
                     }
+                    .frame(height: 52)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .background(
+                    meeting.id == selectedMeetingID ? Color(uiColor: .systemBackground).opacity(0.7) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                )
+
+                if index < meetings.count - 1 {
+                    Divider()
+                        .padding(.leading, 43)
                 }
             }
         }
         .padding(HomeGridMetrics.cardPadding)
-        .frame(maxWidth: .infinity, minHeight: HomeGridMetrics.wideHeight, maxHeight: HomeGridMetrics.wideHeight, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(uiColor: .secondarySystemBackground), in: HomeGridMetrics.cardShape)
+    }
+}
+
+private extension HomeMeeting {
+    var homeActionTitle: String {
+        switch stage {
+        case .hostAvailability:
+            return "내 가능 시간 입력"
+        case .collectingResponses:
+            return "팀원 응답 확인"
+        case .bracketReview:
+            return "회의 시간 도출"
+        case .confirmed:
+            return "확정 일정 확인"
+        }
+    }
+
+    var homeActionDetail: String {
+        switch stage {
+        case .hostAvailability:
+            return "후보 기간에서 가능·부담·불가 시간을 입력해주세요."
+        case .collectingResponses:
+            return "\(respondedCount)/\(memberCount)명 응답을 캘린더에서 확인할 수 있어요."
+        case .bracketReview:
+            return "모든 응답을 비교해 가장 안정적인 시간을 확인하세요."
+        case .confirmed:
+            return "확정된 일정이 캘린더에 반영되었습니다."
+        }
+    }
+
+    var homePlaceText: String {
+        let components = subtitle
+            .components(separatedBy: " · ")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        guard let modeIndex = components.firstIndex(where: { $0 == "온라인" || $0 == "오프라인" }) else {
+            return sectionName
+        }
+
+        if components[modeIndex] == "온라인" {
+            return "온라인"
+        }
+
+        let locationIndex = components.index(after: modeIndex)
+        return locationIndex < components.endIndex ? components[locationIndex] : "오프라인"
     }
 }
 
