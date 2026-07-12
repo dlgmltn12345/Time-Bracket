@@ -16,3 +16,7 @@ xcuserdata/
 # User/local files
 *.swp
 *.log
+
+# Local design references and recordings
+/image/
+/candidate-comparison-redesign.png
