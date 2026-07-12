@@ -6,6 +6,8 @@
 
 [![Time Bracket 프로토타입 영상](https://img.youtube.com/vi/oDrtA4AGTXs/maxresdefault.jpg)](https://www.youtube.com/watch?v=oDrtA4AGTXs)
 
+[Figma 프로토타입 보기](https://www.figma.com/proto/9pGwdKXm9MwiYo3CbE2dIl/%ED%86%A0%EC%8A%A4%EA%B3%BC%EC%A0%9C?node-id=173-2&viewport=114%2C586%2C0.1&t=7BNS3EkB5FwTFwyR-1&scaling=contain&content-scaling=fixed&page-id=0%3A1)
+
 ## 해결하려는 문제
 
 기존 일정 조율은 가능한 시간을 겹쳐 보여주는 데 그치기 쉽습니다. 하지만 실제 회의에서는 필수 참석자 여부, 이동이나 일정으로 인한 부담, 선택 참석자의 불참 가능성까지 함께 판단해야 합니다.
