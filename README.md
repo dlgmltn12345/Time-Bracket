@@ -2,6 +2,10 @@
 
 여섯 명의 동료가 각자의 가능·부담·불가능 시간을 공유하고, 시스템의 설명 가능한 선별 과정을 거쳐 1시간 회의를 확정하는 SwiftUI 프로토타입입니다.
 
+## 프로토타입 영상
+
+[![Time Bracket 프로토타입 영상](https://img.youtube.com/vi/oDrtA4AGTXs/maxresdefault.jpg)](https://www.youtube.com/watch?v=oDrtA4AGTXs)
+
 ## 해결하려는 문제
 
 기존 일정 조율은 가능한 시간을 겹쳐 보여주는 데 그치기 쉽습니다. 하지만 실제 회의에서는 필수 참석자 여부, 이동이나 일정으로 인한 부담, 선택 참석자의 불참 가능성까지 함께 판단해야 합니다.
@@ -63,4 +67,3 @@ Time Bracket은 다음 질문에 답하도록 설계했습니다.
 ## 문서
 
 - [최종 기획 문서](time_bracket_product_planning_final.md): 현재 프로토타입의 문제 정의, 정책, 전체 플로우, 검증 범위
-- [초기 기획 문서](time_bracket_product_planning.md): 아이디어 탐색과 초기 정책 기록
