@@ -6,7 +6,7 @@
 
 [![Time Bracket 프로토타입 영상](https://img.youtube.com/vi/oDrtA4AGTXs/maxresdefault.jpg)](https://www.youtube.com/watch?v=oDrtA4AGTXs)
 
-[Figma 프로토타입 보기](https://www.figma.com/proto/9pGwdKXm9MwiYo3CbE2dIl/%ED%86%A0%EC%8A%A4%EA%B3%BC%EC%A0%9C?node-id=173-2&viewport=114%2C586%2C0.1&t=7BNS3EkB5FwTFwyR-1&scaling=contain&content-scaling=fixed&page-id=0%3A1)
+[Figma 과제 슬라이드](https://www.figma.com/proto/9pGwdKXm9MwiYo3CbE2dIl/%ED%86%A0%EC%8A%A4%EA%B3%BC%EC%A0%9C?node-id=173-2&viewport=114%2C586%2C0.1&t=7BNS3EkB5FwTFwyR-1&scaling=contain&content-scaling=fixed&page-id=0%3A1)
 
 ## 해결하려는 문제
 
